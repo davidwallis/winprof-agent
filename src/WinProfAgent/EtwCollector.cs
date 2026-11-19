@@ -81,8 +81,13 @@ public sealed class EtwCollector(
 
             if (!processNames.TryGetValue(pid, out var name))
             {
-                name = ResolveService(NormalizeName(data.ProcessName, pid));
+                var image = NormalizeName(data.ProcessName, pid);
+                name = ResolveService(image);
                 processNames[pid] = name;
+                if (name is not null && _opt.Processes.Targets.Count > 0)
+                {
+                    logger.LogInformation("Profiling {Process} (pid {Pid}) as service {Service}", image, pid, name);
+                }
             }
             if (name is null) return;
 
@@ -108,6 +113,7 @@ public sealed class EtwCollector(
         };
 
         logger.LogInformation("ETW session started: {Hz} Hz, {Window}s windows", _opt.SampleHz, window.TotalSeconds);
+        LogTargets(logger);
         source.Process();
 
         if (counts.Count > 0) Snapshot(counts, processNames, log, windowStart, DateTimeOffset.UtcNow, periodNanos);
@@ -184,6 +190,22 @@ public sealed class EtwCollector(
             PdbAge = module.PdbAge,
             Rva = (uint)(ca.Address - module.ImageBase),
         };
+    }
+
+    private void LogTargets(ILogger logger)
+    {
+        var p = _opt.Processes;
+        if (p.Targets.Count == 0)
+        {
+            logger.LogWarning("No Processes:Targets configured: profiling every process (excluding {Exclude})", string.Join(", ", p.Exclude));
+            return;
+        }
+
+        foreach (var t in p.Targets)
+        {
+            logger.LogInformation("Target: process {Process} -> service {Service}", t.Process,
+                string.IsNullOrWhiteSpace(t.Name) ? t.Process : t.Name);
+        }
     }
 
     /// <summary>Returns the Pyroscope service name for a process, or null when it should not be profiled.</summary>
