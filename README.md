@@ -17,6 +17,22 @@ Targets: C++, VB6 (native-compiled), .NET Framework, .NET (Core), including COM 
 - VB6 p-code shows only `msvbvm60` frames; native-compiled VB6 with PDBs resolves normally.
 - x86 stacks without frame pointers may be incomplete.
 
+## Metrics
+
+OpenTelemetry metrics (OTLP) from the `WinProfAgent` meter plus .NET runtime instrumentation. Configure with `Agent:Metrics` or the standard `OTEL_EXPORTER_OTLP_*` environment variables. No tracing.
+
+Key instruments: `winprof.cpu.samples`, `winprof.windows`, `winprof.profiles.pushed`, `winprof.push.failures`, `winprof.profiles.dropped`, `winprof.etw.events_lost`, `winprof.push.queue.length`, `winprof.push.duration`, `winprof.window.processing.duration`, `winprof.profile.size`.
+
+## Install
+
+```powershell
+dotnet publish src\WinProfAgent -c Release -r win-x64 --self-contained -o publish
+sc.exe create WinProfAgent binPath= "C:\path\publish\WinProfAgent.exe" start= auto
+sc.exe start WinProfAgent
+```
+
+For a console run, use an elevated shell (`dotnet run --project src\WinProfAgent`).
+
 ## Status
 
-Scaffold only. Capture, conversion and push are not yet implemented.
+Capture, symbolization (TraceLog + PDBs), pprof encoding and Pyroscope push are implemented. The pprof encoder is validated with `go tool pprof`. The live ETW path needs testing on an elevated machine, especially native module symbolization for processes that started before the service (real-time sessions don't receive image-ID rundown events).
