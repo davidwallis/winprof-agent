@@ -42,6 +42,7 @@ CPU-burning targets for verifying the profiler (add the process to `Agent:Proces
 
 - `test-apps\busy-net10`: .NET 10 (`dotnet build -c Release`, process `busy`).
 - `test-apps\busy-netfx`: .NET Framework 4.x (`.\build.ps1`, output in `out\`, process `FxBusy`).
+- `test-apps\busy-native`: native C++ (open `BusyNative.vcxproj` in Visual Studio, or run `.\build.ps1`; output and PDB in `out\`, process `BusyNative`). Use this to check PDB-based symbolization of native frames.
 
 ## Status
 

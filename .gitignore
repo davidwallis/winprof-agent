@@ -482,3 +482,5 @@ $RECYCLE.BIN/
 *.swp
 
 test-apps/busy-netfx/out/
+test-apps/busy-native/out/
+test-apps/busy-native/obj/

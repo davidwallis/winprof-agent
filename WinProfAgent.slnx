@@ -2,4 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/WinProfAgent/WinProfAgent.csproj" />
   </Folder>
+  <Folder Name="/test-apps/">
+    <Project Path="test-apps/busy-native/BusyNative.vcxproj" />
+  </Folder>
 </Solution>
