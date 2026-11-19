@@ -74,8 +74,27 @@ public sealed class EtwCollector(
         var windowsDone = 0;
         long lastLost = 0;
 
+        // The kernel's sampling interval is system-wide and may differ from what we asked for, so measure it
+        // from the gap between consecutive samples on each CPU (idle CPUs sample too).
+        var lastSampleMs = new Dictionary<int, double>();
+        double gapSumMs = 0;
+        long gapCount = 0;
+
         source.Kernel.PerfInfoSample += data =>
         {
+            var cpu = data.ProcessorNumber;
+            var ts = data.TimeStampRelativeMSec;
+            if (lastSampleMs.TryGetValue(cpu, out var prev))
+            {
+                var gap = ts - prev;
+                if (gap > 0 && gap < 100)
+                {
+                    gapSumMs += gap;
+                    gapCount++;
+                }
+            }
+            lastSampleMs[cpu] = ts;
+
             var pid = data.ProcessID;
             if (pid <= 0) return;
 
@@ -100,8 +119,10 @@ public sealed class EtwCollector(
             var now = DateTimeOffset.UtcNow;
             if (now - windowStart < window) return;
 
-            Snapshot(counts, processNames, log, windowStart, now, periodNanos);
+            Snapshot(counts, processNames, log, windowStart, now, MeasurePeriod(gapSumMs, gapCount, periodNanos, logger));
             counts.Clear();
+            gapSumMs = 0;
+            gapCount = 0;
             windowStart = now;
             windowsDone++;
 
@@ -116,7 +137,20 @@ public sealed class EtwCollector(
         LogTargets(logger);
         source.Process();
 
-        if (counts.Count > 0) Snapshot(counts, processNames, log, windowStart, DateTimeOffset.UtcNow, periodNanos);
+        if (counts.Count > 0) Snapshot(counts, processNames, log, windowStart, DateTimeOffset.UtcNow, MeasurePeriod(gapSumMs, gapCount, periodNanos, logger));
+    }
+
+    private static long MeasurePeriod(double gapSumMs, long gapCount, long configuredNanos, ILogger logger)
+    {
+        if (gapCount < 100) return configuredNanos;
+
+        var measured = (long)(gapSumMs / gapCount * 1_000_000);
+        if (Math.Abs(measured - configuredNanos) > configuredNanos / 5)
+        {
+            logger.LogWarning("Measured sampling interval {Measured:F2} ms differs from configured {Configured:F2} ms; using the measured value",
+                measured / 1e6, configuredNanos / 1e6);
+        }
+        return measured;
     }
 
     /// <summary>Runs on the event thread: copies what the symbol worker needs and returns without touching PDBs.</summary>
