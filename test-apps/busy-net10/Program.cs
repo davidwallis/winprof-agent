@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 
 var end = DateTime.UtcNow.AddSeconds(300);
 double total = 0;
+Busy.StartLockHolder();
 while (DateTime.UtcNow < end) total += Busy.Iteration();
 Console.WriteLine(total);
 
@@ -41,6 +42,35 @@ static class Busy
     {
         var t = Level1();
         if (Rng.Next(4) == 0) t += RandomHotspot();
+        t += Allocate();
+        t += Contend();
         return t;
+    }
+
+    static readonly object Gate = new();
+
+    // Holds the lock for 30 ms at a time so Contend() has to wait for it.
+    public static void StartLockHolder() =>
+        new Thread(() =>
+        {
+            while (true)
+            {
+                lock (Gate) Thread.Sleep(30);
+                Thread.Sleep(10);
+            }
+        }) { IsBackground = true }.Start();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static double Contend()
+    {
+        lock (Gate) return 1;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static double Allocate()
+    {
+        var list = new List<string>();
+        for (var i = 0; i < 2000; i++) list.Add(new string('x', 200));
+        return list.Count + new byte[256 * 1024].Length;
     }
 }

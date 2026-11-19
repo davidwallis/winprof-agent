@@ -107,16 +107,16 @@ public sealed class SymbolWorker : BackgroundService
 
         long totalSamples = 0;
         var frames = new List<string>();
-        foreach (var p in snap.Processes)
+
+        void Emit(ProcessSnapshot p, List<StackSample> stacks, PprofBuilder b, Func<StackSample, long[]> values, long period)
         {
-            var b = new PprofBuilder();
-            foreach (var st in p.Stacks)
+            foreach (var st in stacks)
             {
                 frames.Clear();
                 foreach (var id in st.Frames) frames.Add(snap.Frames[id].Name!);
-                b.AddSample(frames, st.Count * snap.PeriodNanos);
-                totalSamples += st.Count;
+                b.AddSample(frames, values(st));
             }
+            if (b.SampleCount == 0) return;
 
             var labels = new Dictionary<string, string>(_opt.Pyroscope.Labels)
             {
@@ -125,9 +125,21 @@ public sealed class SymbolWorker : BackgroundService
                 ["process"] = p.Name,
             };
 
-            var bytes = b.Build(snap.From, snap.Until - snap.From, snap.PeriodNanos);
+            var bytes = b.Build(snap.From, snap.Until - snap.From, period);
             _metrics.ProfileBytes.Record(bytes.Length);
             _profiles.TryWrite(new ProfilePayload(p.Name, labels, snap.From, snap.Until, bytes));
+        }
+
+        SampleType[] allocTypes = [new("alloc_objects", "count"), new("alloc_space", "bytes")];
+        SampleType[] contentionTypes = [new("contentions", "count"), new("delay", "nanoseconds")];
+
+        foreach (var p in snap.Processes)
+        {
+            Emit(p, p.Stacks, new PprofBuilder(), st => [st.Count * snap.PeriodNanos], snap.PeriodNanos);
+            totalSamples += p.Stacks.Sum(s => s.Count);
+
+            Emit(p, p.AllocStacks, new PprofBuilder(allocTypes, new("space", "bytes")), st => [st.Count, st.Value], 1);
+            Emit(p, p.ContentionStacks, new PprofBuilder(contentionTypes, new("contentions", "count")), st => [st.Count, st.Value], 1);
         }
 
         _metrics.Samples.Add(totalSamples);

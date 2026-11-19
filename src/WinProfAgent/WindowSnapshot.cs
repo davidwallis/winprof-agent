@@ -19,6 +19,7 @@ public sealed class StackSample
 {
     public required int[] Frames { get; init; } // leaf first, indexes into WindowSnapshot.Frames
     public long Count { get; set; }
+    public long Value { get; set; } // bytes for allocations, nanoseconds for contention; unused for CPU
 }
 
 public sealed class ProcessSnapshot
@@ -26,6 +27,8 @@ public sealed class ProcessSnapshot
     public required int Pid { get; init; }
     public required string Name { get; init; }
     public List<StackSample> Stacks { get; } = new();
+    public List<StackSample> AllocStacks { get; } = new();
+    public List<StackSample> ContentionStacks { get; } = new();
 }
 
 /// <summary>Everything needed to symbolize and encode a window, independent of the ETW TraceLog.</summary>

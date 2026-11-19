@@ -2,20 +2,27 @@ using System.Text;
 
 namespace WinProfAgent.Pprof;
 
-/// <summary>Minimal pprof (profile.proto) encoder for a single "cpu/nanoseconds" sample type.</summary>
-public sealed class PprofBuilder
+/// <summary>Minimal pprof (profile.proto) encoder.</summary>
+public sealed record SampleType(string Type, string Unit);
+
+public sealed class PprofBuilder(IReadOnlyList<SampleType> sampleTypes, SampleType periodType)
 {
+    public static readonly SampleType[] CpuTypes = [new("cpu", "nanoseconds")];
+    public static readonly SampleType CpuPeriod = new("cpu", "nanoseconds");
+
+    public PprofBuilder() : this(CpuTypes, CpuPeriod) { }
+
     private readonly List<string> _strings = new() { "" };
     private readonly Dictionary<string, long> _stringIds = new() { [""] = 0 };
     private readonly Dictionary<string, ulong> _functionIds = new();
     private readonly List<string> _functionNames = new();
     private readonly Dictionary<string, int> _stacks = new();
-    private readonly List<(ulong[] Locations, long Value)> _samples = new();
+    private readonly List<(ulong[] Locations, long[] Values)> _samples = new();
 
     public int SampleCount => _samples.Count;
 
     /// <param name="framesLeafFirst">Frame names, leaf first.</param>
-    public void AddSample(IReadOnlyList<string> framesLeafFirst, long valueNanos)
+    public void AddSample(IReadOnlyList<string> framesLeafFirst, params long[] values)
     {
         if (framesLeafFirst.Count == 0) return;
 
@@ -26,31 +33,33 @@ public sealed class PprofBuilder
         if (_stacks.TryGetValue(key, out var idx))
         {
             var s = _samples[idx];
-            _samples[idx] = (s.Locations, s.Value + valueNanos);
+            for (var i = 0; i < values.Length; i++) s.Values[i] += values[i];
         }
         else
         {
             _stacks[key] = _samples.Count;
-            _samples.Add((ids, valueNanos));
+            _samples.Add((ids, (long[])values.Clone()));
         }
     }
 
-    public byte[] Build(DateTimeOffset start, TimeSpan duration, long periodNanos)
+    public byte[] Build(DateTimeOffset start, TimeSpan duration, long period)
     {
-        var cpu = StringId("cpu");
-        var nanos = StringId("nanoseconds");
         var nameIds = _functionNames.Select(StringId).ToArray();
 
         var w = new ProtoWriter();
 
-        w.Message(1, m => { m.Int64(1, cpu); m.Int64(2, nanos); });
+        foreach (var st in sampleTypes)
+        {
+            var (type, unit) = (StringId(st.Type), StringId(st.Unit));
+            w.Message(1, m => { m.Int64(1, type); m.Int64(2, unit); });
+        }
 
-        foreach (var (locations, value) in _samples)
+        foreach (var (locations, values) in _samples)
         {
             w.Message(2, m =>
             {
                 m.PackedUInt64(1, locations);
-                m.PackedUInt64(2, new[] { (ulong)value });
+                m.PackedUInt64(2, values.Select(v => (ulong)v).ToArray());
             });
         }
 
@@ -81,8 +90,9 @@ public sealed class PprofBuilder
 
         w.Int64(9, start.ToUnixTimeMilliseconds() * 1_000_000);
         w.Int64(10, duration.Ticks * 100);
-        w.Message(11, m => { m.Int64(1, cpu); m.Int64(2, nanos); });
-        w.Int64(12, periodNanos);
+        var (pType, pUnit) = (StringId(periodType.Type), StringId(periodType.Unit));
+        w.Message(11, m => { m.Int64(1, pType); m.Int64(2, pUnit); });
+        w.Int64(12, period);
 
         return w.ToArray();
     }

@@ -39,4 +39,5 @@ test-apps\busy-netfx\build.ps1
 - Service names and labels are sanitized for Pyroscope (no spaces).
 - Hosting packages are pinned to 10.0.x on purpose (latest NuGet is 11.x preview).
 - Smart App Control can block freshly built binaries on dev machines; there is no per-folder exclusion and self-signing didn't help.
-- Known gaps: NGen images (`system.ni`) aren't symbolized; VB6 p-code only shows `msvbvm60` frames; only CPU profile type is collected; COM+ apps in `dllhost` can't be told apart yet.
+- Known gaps: NGen images (`system.ni`) aren't symbolized; VB6 p-code only shows `msvbvm60` frames; allocation and lock-contention profiles are .NET-only (CPU covers everything); COM+ apps in `dllhost` can't be told apart yet.
+- Profile types: CPU (kernel sampling, all runtimes), plus .NET allocations (`memory:alloc_*`) and lock contention (`mutex:*`) from CLR events (`CollectAllocations` / `CollectContentions`). The CLR provider must be re-enabled with stack options after `CaptureState` (it resets them), and user-mode event stacks arrive late, so `EtwCollector` resolves them ~1 s after the event.

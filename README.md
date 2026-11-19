@@ -15,6 +15,12 @@ Targets: C++, VB6 (native-compiled), .NET Framework, .NET (Core), including COM 
 - A missing PDB is logged once per module (retried after `MissingRetryMinutes`) and counted in `winprof.symbols.missing`.
 - Configured through `appsettings.json` (plus environment variables).
 
+## Profile types
+
+- `process_cpu` (all runtimes): kernel sampling; interval is measured from the data.
+- `memory:alloc_objects` / `memory:alloc_space` (.NET only): CLR allocation ticks (~every 100 KB), with the allocated type as the leaf frame. Disable with `Agent:CollectAllocations=false`.
+- `mutex:contentions` / `mutex:delay` (.NET only): CLR lock contention. Disable with `Agent:CollectContentions=false`.
+
 ## Known limits
 
 - VB6 p-code shows only `msvbvm60` frames; native-compiled VB6 with PDBs resolves normally.
@@ -44,7 +50,7 @@ CPU-burning targets for verifying the profiler (add the process to `Agent:Proces
 - `test-apps\busy-netfx`: .NET Framework 4.x (`.\build.ps1`, output in `out\`, process `FxBusy`).
 - `test-apps\busy-native`: native C++ (open `BusyNative.vcxproj` in Visual Studio, or run `.\build.ps1`; output and PDB in `out\`, process `BusyNative`). Use this to check PDB-based symbolization of native frames.
 
-Run `test-apps\launch.ps1` to build (if needed) and start all of them; `-Stop` stops them, `-Rebuild` forces rebuilds. The default `Targets` in `appsettings.json` cover all three apps.
+Run `test-apps\launch.ps1` to build (if needed) and start all of them; `-Stop` stops them, `-Rebuild` forces rebuilds. The default `Targets` in `appsettings.json` cover all three apps. The .NET apps also allocate and contend on a lock, to exercise the allocation and contention profiles.
 
 ## Status
 

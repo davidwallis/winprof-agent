@@ -8,6 +8,8 @@ public sealed class AgentOptions
     public int QueueCapacity { get; set; } = 100;
     public int SnapshotQueueCapacity { get; set; } = 4;
     public int SessionRecycleWindows { get; set; } = 30;
+    public bool CollectAllocations { get; set; } = true;
+    public bool CollectContentions { get; set; } = true;
     public PyroscopeOptions Pyroscope { get; set; } = new();
     public ProcessFilter Processes { get; set; } = new();
     public SymbolOptions Symbols { get; set; } = new();

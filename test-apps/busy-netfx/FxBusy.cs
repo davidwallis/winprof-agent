@@ -32,16 +32,50 @@ static class FxBusy
     [MethodImpl(MethodImplOptions.NoInlining)]
     static double RandomHotspot() { return BurnMs(Rng.Next(50, 400)); }
 
+    static readonly object Gate = new object();
+
+    // Holds the lock for 30 ms at a time so Contend() has to wait for it.
+    static void StartLockHolder()
+    {
+        var th = new System.Threading.Thread(() =>
+        {
+            while (true)
+            {
+                lock (Gate) System.Threading.Thread.Sleep(30);
+                System.Threading.Thread.Sleep(10);
+            }
+        });
+        th.IsBackground = true;
+        th.Start();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static double Contend()
+    {
+        lock (Gate) return 1;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static double Allocate()
+    {
+        var list = new System.Collections.Generic.List<string>();
+        for (int i = 0; i < 2000; i++) list.Add(new string('x', 200));
+        return list.Count + new byte[256 * 1024].Length;
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     static double Iteration()
     {
         double t = Level1();
         if (Rng.Next(4) == 0) t += RandomHotspot();
+        t += Allocate();
+        t += Contend();
         return t;
     }
 
     static void Main()
     {
+        StartLockHolder();
         double t = 0;
         while (true) t += Iteration();
     }

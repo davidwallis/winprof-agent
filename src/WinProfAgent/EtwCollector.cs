@@ -39,6 +39,9 @@ public sealed class EtwCollector(
     }
 
     /// <summary>One ETW session lifetime: runs N windows, then returns so the TraceLog memory can be released.</summary>
+    private const int AllocationTickEventId = 10;
+    private const int ContentionStartEventId = 81;
+
     private void RunEpoch(CancellationToken ct)
     {
         var window = TimeSpan.FromSeconds(Math.Max(1, _opt.WindowSeconds));
@@ -59,8 +62,21 @@ public sealed class EtwCollector(
             KernelTraceEventParser.Keywords.Profile);
 
         // Runtime events give managed (JIT) method names; rundown covers processes that started before us.
-        session.EnableProvider(ClrTraceEventParser.ProviderGuid, TraceEventLevel.Informational,
-            (ulong)(ClrTraceEventParser.Keywords.Jit | ClrTraceEventParser.Keywords.NGen | ClrTraceEventParser.Keywords.Loader));
+        var clrKeywords = ClrTraceEventParser.Keywords.Jit | ClrTraceEventParser.Keywords.NGen | ClrTraceEventParser.Keywords.Loader;
+        var clrOptions = new TraceEventProviderOptions { StacksEnabled = true };
+        clrOptions.EventIDStacksToEnable = new List<int>();
+        if (_opt.CollectAllocations)
+        {
+            clrKeywords |= ClrTraceEventParser.Keywords.GC;
+            clrOptions.EventIDStacksToEnable.Add(AllocationTickEventId);
+        }
+        if (_opt.CollectContentions)
+        {
+            clrKeywords |= ClrTraceEventParser.Keywords.Contention;
+            clrOptions.EventIDStacksToEnable.Add(ContentionStartEventId);
+        }
+        if (clrOptions.EventIDStacksToEnable.Count == 0) clrOptions.StacksEnabled = false;
+        session.EnableProvider(ClrTraceEventParser.ProviderGuid, TraceEventLevel.Verbose, (ulong)clrKeywords, clrOptions);
         session.EnableProvider(ClrRundownTraceEventParser.ProviderGuid, TraceEventLevel.Verbose,
             (ulong)(ClrRundownTraceEventParser.Keywords.Jit | ClrRundownTraceEventParser.Keywords.NGen |
                     ClrRundownTraceEventParser.Keywords.Loader | ClrRundownTraceEventParser.Keywords.StartEnumeration));
@@ -83,8 +99,11 @@ public sealed class EtwCollector(
         // Explicitly ask already-running .NET Framework processes to emit their method rundown.
         session.CaptureState(ClrTraceEventParser.ProviderGuid,
             (ulong)(ClrTraceEventParser.Keywords.Jit | ClrTraceEventParser.Keywords.NGen | ClrTraceEventParser.Keywords.Loader));
+        // CaptureState re-enables the provider without our options, so apply them again (this restores stack capture).
+        session.EnableProvider(ClrTraceEventParser.ProviderGuid, TraceEventLevel.Verbose, (ulong)clrKeywords, clrOptions);
 
-        var counts = new Dictionary<(int Pid, CallStackIndex Stack), int>();
+        var data = new WindowData();
+        var counts = data.Cpu;
         var processNames = new Dictionary<int, string?>();
         var windowStart = DateTimeOffset.UtcNow;
         var windowsDone = 0;
@@ -95,11 +114,84 @@ public sealed class EtwCollector(
         var lastSample = new Dictionary<int, (double Ms, int Pid)>();
         var gaps = new List<double>();
 
-        source.Kernel.PerfInfoSample += data =>
+        string? ServiceFor(int pid, string processName)
         {
-            var cpu = data.ProcessorNumber;
-            var ts = data.TimeStampRelativeMSec;
-            var samplePid = data.ProcessID;
+            if (processNames.TryGetValue(pid, out var name)) return name;
+            var image = NormalizeName(processName, pid);
+            name = ResolveService(image);
+            processNames[pid] = name;
+            if (name is not null && _opt.Processes.Targets.Count > 0)
+            {
+                logger.LogInformation("Profiling {Process} (pid {Pid}) as service {Service}", image, pid, name);
+            }
+            return name;
+        }
+
+        var allocPending = new List<(int Pid, GCAllocationTickTraceData Event)>();
+        var contentionPending = new List<(ContentionStartTraceData Start, long Nanos)>();
+        const double StackDelayMs = 1000;
+        void DrainPending(double nowMs)
+        {
+            var keep = 0;
+            for (var i = 0; i < allocPending.Count; i++)
+            {
+                var (apid, a) = allocPending[i];
+                if (nowMs - a.TimeStampRelativeMSec < StackDelayMs) { allocPending[keep++] = allocPending[i]; continue; }
+                var stack = a.CallStack();
+                if (stack is null) { data.AllocNoStack++; continue; }
+                var type = string.IsNullOrEmpty(a.TypeName) ? "<unknown>" : a.TypeName;
+                ref var v = ref CollectionsMarshal.GetValueRefOrAddDefault(data.Allocs, (apid, stack.CallStackIndex, type), out _);
+                v = (v.Objects + 1, v.Bytes + a.AllocationAmount64);
+            }
+            allocPending.RemoveRange(keep, allocPending.Count - keep);
+
+            keep = 0;
+            for (var i = 0; i < contentionPending.Count; i++)
+            {
+                var (start, nanos) = contentionPending[i];
+                if (nowMs - start.TimeStampRelativeMSec < StackDelayMs) { contentionPending[keep++] = contentionPending[i]; continue; }
+                var stack = start.CallStack();
+                if (stack is null) { data.ContentionNoStack++; continue; }
+                ref var v = ref CollectionsMarshal.GetValueRefOrAddDefault(data.Contentions, (start.ProcessID, stack.CallStackIndex), out _);
+                v = (v.Count + 1, v.Nanos + nanos);
+            }
+            contentionPending.RemoveRange(keep, contentionPending.Count - keep);
+        }
+
+        if (_opt.CollectAllocations)
+        {
+            source.Clr.GCAllocationTick += a =>
+            {
+                if (a.ProcessID <= 0 || ServiceFor(a.ProcessID, a.ProcessName) is null) return;
+                data.AllocEvents++;
+                // The stack arrives as a separate event right after this one, so resolve it a little later.
+                allocPending.Add((a.ProcessID, (GCAllocationTickTraceData)a.Clone()));
+            };
+        }
+
+        if (_opt.CollectContentions)
+        {
+            var pending = new Dictionary<(int Pid, int Tid), ContentionStartTraceData>();
+            source.Clr.ContentionStart += c =>
+            {
+                if (c.ProcessID <= 0 || ServiceFor(c.ProcessID, c.ProcessName) is null) return;
+                data.ContentionEvents++;
+                pending[(c.ProcessID, c.ThreadID)] = (ContentionStartTraceData)c.Clone();
+            };
+            source.Clr.ContentionStop += c =>
+            {
+                if (!pending.Remove((c.ProcessID, c.ThreadID), out var start)) return;
+                var nanos = (long)((c.TimeStampRelativeMSec - start.TimeStampRelativeMSec) * 1_000_000);
+                contentionPending.Add((start, Math.Max(0, nanos)));
+            };
+        }
+
+        source.Kernel.PerfInfoSample += d =>
+        {
+            if (allocPending.Count + contentionPending.Count > 0) DrainPending(d.TimeStampRelativeMSec);
+            var cpu = d.ProcessorNumber;
+            var ts = d.TimeStampRelativeMSec;
+            var samplePid = d.ProcessID;
             if (lastSample.TryGetValue(cpu, out var prev) && samplePid > 0 && prev.Pid > 0 && gaps.Count < 50_000)
             {
                 var gap = ts - prev.Ms;
@@ -107,22 +199,13 @@ public sealed class EtwCollector(
             }
             lastSample[cpu] = (ts, samplePid);
 
-            var pid = data.ProcessID;
+            var pid = d.ProcessID;
             if (pid <= 0) return;
 
-            if (!processNames.TryGetValue(pid, out var name))
-            {
-                var image = NormalizeName(data.ProcessName, pid);
-                name = ResolveService(image);
-                processNames[pid] = name;
-                if (name is not null && _opt.Processes.Targets.Count > 0)
-                {
-                    logger.LogInformation("Profiling {Process} (pid {Pid}) as service {Service}", image, pid, name);
-                }
-            }
+            var name = ServiceFor(pid, d.ProcessName);
             if (name is null) return;
 
-            var stack = data.CallStack();
+            var stack = d.CallStack();
             if (stack is null) return;
 
             ref var c = ref CollectionsMarshal.GetValueRefOrAddDefault(counts, (pid, stack.CallStackIndex), out _);
@@ -131,8 +214,8 @@ public sealed class EtwCollector(
             var now = DateTimeOffset.UtcNow;
             if (now - windowStart < window) return;
 
-            Snapshot(counts, processNames, log, windowStart, now,             MeasurePeriod(gaps, periodNanos, logger), methods);
-            counts.Clear();
+            Snapshot(data, processNames, log, windowStart, now, MeasurePeriod(gaps, periodNanos, logger), methods);
+            data.Clear();
             gaps.Clear();
             windowStart = now;
             windowsDone++;
@@ -148,7 +231,7 @@ public sealed class EtwCollector(
         LogTargets(logger);
         source.Process();
 
-        if (counts.Count > 0) Snapshot(counts, processNames, log, windowStart, DateTimeOffset.UtcNow,                 MeasurePeriod(gaps, periodNanos, logger), methods);
+        if (!data.IsEmpty) Snapshot(data, processNames, log, windowStart, DateTimeOffset.UtcNow, MeasurePeriod(gaps, periodNanos, logger), methods);
     }
 
     private static long MeasurePeriod(List<double> gaps, long configuredNanos, ILogger logger)
@@ -165,9 +248,26 @@ public sealed class EtwCollector(
         return measured;
     }
 
+    private sealed class WindowData
+    {
+        public Dictionary<(int Pid, CallStackIndex Stack), int> Cpu { get; } = new();
+        public Dictionary<(int Pid, CallStackIndex Stack, string Type), (long Objects, long Bytes)> Allocs { get; } = new();
+        public Dictionary<(int Pid, CallStackIndex Stack), (long Count, long Nanos)> Contentions { get; } = new();
+        public long AllocEvents, AllocNoStack, ContentionEvents, ContentionNoStack;
+        public bool IsEmpty => Cpu.Count == 0 && Allocs.Count == 0 && Contentions.Count == 0;
+
+        public void Clear()
+        {
+            Cpu.Clear();
+            Allocs.Clear();
+            Contentions.Clear();
+            AllocEvents = AllocNoStack = ContentionEvents = ContentionNoStack = 0;
+        }
+    }
+
     /// <summary>Runs on the event thread: copies what the symbol worker needs and returns without touching PDBs.</summary>
     private void Snapshot(
-        Dictionary<(int Pid, CallStackIndex Stack), int> counts,
+        WindowData data,
         Dictionary<int, string?> processNames,
         TraceLog log,
         DateTimeOffset from,
@@ -175,14 +275,27 @@ public sealed class EtwCollector(
         long periodNanos,
         ManagedMethodMap methods)
     {
+        logger.LogInformation("Window events: alloc ticks {A} ({AN} without stack), contentions {C} ({CN} without stack)",
+            data.AllocEvents, data.AllocNoStack, data.ContentionEvents, data.ContentionNoStack);
         var frames = new List<FrameInfo>();
         var frameIds = new Dictionary<(int Pid, CodeAddressIndex Index), int>();
+        var typeFrameIds = new Dictionary<string, int>();
         var processes = new Dictionary<int, ProcessSnapshot>();
         var ids = new List<int>();
 
-        foreach (var ((pid, stackIndex), count) in counts)
+        // Walks a call stack into ids (leaf first), optionally with a synthetic leaf such as an allocated type name.
+        int[]? Walk(int pid, CallStackIndex stackIndex, string? leaf)
         {
             ids.Clear();
+            if (leaf is not null)
+            {
+                if (!typeFrameIds.TryGetValue(leaf, out var leafId))
+                {
+                    typeFrameIds[leaf] = leafId = frames.Count;
+                    frames.Add(new FrameInfo { Name = leaf });
+                }
+                ids.Add(leafId);
+            }
             for (var cs = log.CallStacks[stackIndex]; cs != null; cs = cs.Caller)
             {
                 var ca = cs.CodeAddress;
@@ -194,15 +307,30 @@ public sealed class EtwCollector(
                 }
                 ids.Add(id);
             }
-            if (ids.Count == 0) continue;
+            return ids.Count == 0 ? null : ids.ToArray();
+        }
 
+        ProcessSnapshot Proc(int pid)
+        {
             if (!processes.TryGetValue(pid, out var p))
             {
                 processes[pid] = p = new ProcessSnapshot { Pid = pid, Name = processNames[pid]! };
             }
-            p.Stacks.Add(new StackSample { Frames = ids.ToArray(), Count = count });
+            return p;
         }
 
+        foreach (var ((pid, stack), count) in data.Cpu)
+        {
+            if (Walk(pid, stack, null) is { } f) Proc(pid).Stacks.Add(new StackSample { Frames = f, Count = count });
+        }
+        foreach (var ((pid, stack, type), v) in data.Allocs)
+        {
+            if (Walk(pid, stack, type) is { } f) Proc(pid).AllocStacks.Add(new StackSample { Frames = f, Count = v.Objects, Value = v.Bytes });
+        }
+        foreach (var ((pid, stack), v) in data.Contentions)
+        {
+            if (Walk(pid, stack, null) is { } f) Proc(pid).ContentionStacks.Add(new StackSample { Frames = f, Count = v.Count, Value = v.Nanos });
+        }
         // Downloads are only ever allowed for processes explicitly listed in Targets.
         var allowDownload = _opt.Symbols.AllowDownload && _opt.Processes.Targets.Count > 0;
 
