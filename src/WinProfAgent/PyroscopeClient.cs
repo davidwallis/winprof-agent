@@ -36,19 +36,29 @@ public sealed class PyroscopeClient(HttpClient http, IOptions<AgentOptions> opti
         }
     }
 
-    // Pyroscope app name format: app{label=value,...}
+    // Pyroscope app name format: app{label=value,...}; service names allow [A-Za-z0-9._-] only
     private static string BuildName(ProfilePayload p)
     {
-        var sb = new StringBuilder(p.AppName).Append('{');
+        var sb = new StringBuilder(Sanitize(p.AppName)).Append('{');
         var first = true;
         foreach (var (k, v) in p.Labels)
         {
             if (!first) sb.Append(',');
-            sb.Append(k).Append('=').Append(v);
+            sb.Append(Sanitize(k)).Append('=').Append(v.Replace(',', '_').Replace('}', '_').Replace('{', '_'));
             first = false;
         }
         return sb.Append('}').ToString();
     }
+
+    private static string Sanitize(string s) =>
+        string.Create(s.Length, s, (span, src) =>
+        {
+            for (var i = 0; i < src.Length; i++)
+            {
+                var c = src[i];
+                span[i] = char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-' ? c : '_';
+            }
+        });
 }
 
 public sealed class PushWorker(

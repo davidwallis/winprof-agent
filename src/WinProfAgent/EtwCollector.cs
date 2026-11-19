@@ -47,7 +47,7 @@ public sealed class EtwCollector(
         var periodNanos = 1_000_000_000L / Math.Max(1, _opt.SampleHz);
         var host = Environment.MachineName;
 
-        using var session = new TraceEventSession(KernelTraceEventParser.KernelSessionName)
+        using var session = new TraceEventSession("WinProfAgent")
         {
             BufferSizeMB = _opt.BufferSizeMB,
             CpuSampleIntervalMSec = (float)(1000.0 / Math.Max(1, _opt.SampleHz)),
@@ -74,7 +74,7 @@ public sealed class EtwCollector(
         using var symbolReader = new SymbolReader(TextWriter.Null, symbolPath)
         {
             SecurityCheck = _ => true,
-            Options = SymbolReaderOptions.CacheOnly,
+            Options = symbolPath.Contains("SRV*", StringComparison.OrdinalIgnoreCase) ? SymbolReaderOptions.None : SymbolReaderOptions.CacheOnly,
         };
 
         var counts = new Dictionary<(int Pid, CallStackIndex Stack), int>();
