@@ -69,9 +69,9 @@ public sealed class SymbolWorker : BackgroundService
             Options = SymbolReaderOptions.None,
         };
 
-        if (s.AllowDownload && _opt.Processes.Include.Count == 0)
+        if (s.AllowDownload && _opt.Processes.Targets.Count == 0)
         {
-            _logger.LogWarning("Symbol downloads are disabled because Agent:Processes:Include is empty");
+            _logger.LogWarning("Symbol downloads are disabled because Agent:Processes:Targets is empty");
         }
     }
 

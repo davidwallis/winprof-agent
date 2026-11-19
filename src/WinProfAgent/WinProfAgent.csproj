@@ -16,7 +16,4 @@
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.21.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.21.0" />
   </ItemGroup>
-  <Target Name="SignOutput" AfterTargets="Build" Condition="'$(SignCertThumbprint)' != '' And '$(OS)' == 'Windows_NT'">
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\scripts\sign.ps1&quot; -Thumbprint $(SignCertThumbprint) -Path &quot;$(TargetPath)&quot;,&quot;$(TargetDir)$(TargetName).exe&quot;" />
-  </Target>
 </Project>

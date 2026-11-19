@@ -33,8 +33,18 @@ public sealed class PyroscopeOptions
 
 public sealed class ProcessFilter
 {
-    public List<string> Include { get; set; } = new();
+    // Processes to profile. Empty means every process, named after the process, with symbol downloads disabled.
+    public List<TargetOptions> Targets { get; set; } = new();
     public List<string> Exclude { get; set; } = new();
+}
+
+public sealed class TargetOptions
+{
+    // Pyroscope service_name. Defaults to the process name.
+    public string? Name { get; set; }
+
+    // Process image name, with or without .exe. Matching is case-insensitive.
+    public string Process { get; set; } = "";
 }
 
 public sealed class SymbolOptions
@@ -45,7 +55,7 @@ public sealed class SymbolOptions
     // Extra local folders searched before the symbol folder.
     public List<string> PdbSearchPaths { get; set; } = new();
 
-    // Only applies to processes listed in Processes:Include; with an empty Include list downloads are disabled.
+    // Only applies to processes matching Processes:Targets; with an empty Targets list downloads are disabled.
     public bool AllowDownload { get; set; } = true;
 
     // Symbol servers in order of preference.

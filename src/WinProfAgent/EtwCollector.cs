@@ -69,7 +69,7 @@ public sealed class EtwCollector(
         var log = source.TraceLog;
 
         var counts = new Dictionary<(int Pid, CallStackIndex Stack), int>();
-        var processNames = new Dictionary<int, string>();
+        var processNames = new Dictionary<int, string?>();
         var windowStart = DateTimeOffset.UtcNow;
         var windowsDone = 0;
         long lastLost = 0;
@@ -81,10 +81,10 @@ public sealed class EtwCollector(
 
             if (!processNames.TryGetValue(pid, out var name))
             {
-                name = NormalizeName(data.ProcessName, pid);
+                name = ResolveService(NormalizeName(data.ProcessName, pid));
                 processNames[pid] = name;
             }
-            if (!Allowed(name)) return;
+            if (name is null) return;
 
             var stack = data.CallStack();
             if (stack is null) return;
@@ -116,7 +116,7 @@ public sealed class EtwCollector(
     /// <summary>Runs on the event thread: copies what the symbol worker needs and returns without touching PDBs.</summary>
     private void Snapshot(
         Dictionary<(int Pid, CallStackIndex Stack), int> counts,
-        Dictionary<int, string> processNames,
+        Dictionary<int, string?> processNames,
         TraceLog log,
         DateTimeOffset from,
         DateTimeOffset until,
@@ -145,13 +145,13 @@ public sealed class EtwCollector(
 
             if (!processes.TryGetValue(pid, out var p))
             {
-                processes[pid] = p = new ProcessSnapshot { Pid = pid, Name = processNames[pid] };
+                processes[pid] = p = new ProcessSnapshot { Pid = pid, Name = processNames[pid]! };
             }
             p.Stacks.Add(new StackSample { Frames = ids.ToArray(), Count = count });
         }
 
-        // Downloads are only ever allowed for processes explicitly listed in Include.
-        var allowDownload = _opt.Symbols.AllowDownload && _opt.Processes.Include.Count > 0;
+        // Downloads are only ever allowed for processes         explicitly listed in Targets.
+                var allowDownload = _opt.Symbols.AllowDownload && _opt.Processes.Targets.Count > 0;
 
         snapshots.TryWrite(new WindowSnapshot
         {
@@ -186,11 +186,22 @@ public sealed class EtwCollector(
         };
     }
 
-    private bool Allowed(string name)
+    /// <summary>Returns the Pyroscope service name for a process, or null when it should not be profiled.</summary>
+    private string? ResolveService(string processName)
     {
         var f = _opt.Processes;
-        if (f.Exclude.Any(e => string.Equals(e, name, StringComparison.OrdinalIgnoreCase))) return false;
-        return f.Include.Count == 0 || f.Include.Any(i => string.Equals(i, name, StringComparison.OrdinalIgnoreCase));
+        if (f.Exclude.Any(e => SameProcess(e, processName))) return null;
+        if (f.Targets.Count == 0) return processName;
+
+        var target = f.Targets.FirstOrDefault(t => SameProcess(t.Process, processName));
+        if (target is null) return null;
+        return string.IsNullOrWhiteSpace(target.Name) ? processName : target.Name;
+    }
+
+    private static bool SameProcess(string configured, string processName)
+    {
+        if (configured.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) configured = configured[..^4];
+        return string.Equals(configured, processName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeName(string? name, int pid)
