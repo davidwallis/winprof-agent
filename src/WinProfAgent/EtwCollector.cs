@@ -114,11 +114,24 @@ public sealed class EtwCollector(
         var lastSample = new Dictionary<int, (double Ms, int Pid)>();
         var gaps = new List<double>();
 
+        var commandLines = new Dictionary<int, string>();
+        source.Kernel.ProcessStartGroup += p =>
+        {
+            if (!string.IsNullOrEmpty(p.CommandLine)) commandLines[p.ProcessID] = p.CommandLine;
+            processNames.Remove(p.ProcessID);
+        };
+        source.Kernel.ProcessStop += p =>
+        {
+            commandLines.Remove(p.ProcessID);
+            processNames.Remove(p.ProcessID);
+        };
+
         string? ServiceFor(int pid, string processName)
         {
             if (processNames.TryGetValue(pid, out var name)) return name;
             var image = NormalizeName(processName, pid);
-            name = ResolveService(image);
+            commandLines.TryGetValue(pid, out var commandLine);
+            name = ResolveService(image, commandLine);
             processNames[pid] = name;
             if (name is not null && _opt.Processes.Targets.Count > 0)
             {
@@ -382,22 +395,27 @@ public sealed class EtwCollector(
 
         foreach (var t in p.Targets)
         {
-            logger.LogInformation("Target: process {Process} -> service {Service}", t.Process,
+            logger.LogInformation("Target: process {Process} {CommandLine} -> service {Service}", t.Process,
+                string.IsNullOrEmpty(t.CommandLineContains) ? "" : $"(command line contains {t.CommandLineContains})",
                 string.IsNullOrWhiteSpace(t.Name) ? t.Process : t.Name);
         }
     }
 
     /// <summary>Returns the Pyroscope service name for a process, or null when it should not be profiled.</summary>
-    private string? ResolveService(string processName)
+    private string? ResolveService(string processName, string? commandLine)
     {
         var f = _opt.Processes;
         if (f.Exclude.Any(e => SameProcess(e, processName))) return null;
         if (f.Targets.Count == 0) return processName;
 
-        var target = f.Targets.FirstOrDefault(t => SameProcess(t.Process, processName));
+        var target = f.Targets.FirstOrDefault(t => SameProcess(t.Process, processName) && MatchesCommandLine(t, commandLine));
         if (target is null) return null;
         return string.IsNullOrWhiteSpace(target.Name) ? processName : target.Name;
     }
+
+    private static bool MatchesCommandLine(TargetOptions t, string? commandLine) =>
+        string.IsNullOrEmpty(t.CommandLineContains) ||
+        (commandLine?.Contains(t.CommandLineContains, StringComparison.OrdinalIgnoreCase) ?? false);
 
     private static bool SameProcess(string configured, string processName)
     {

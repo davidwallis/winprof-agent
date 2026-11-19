@@ -47,6 +47,10 @@ public sealed class TargetOptions
 
     // Process image name, with or without .exe. Matching is case-insensitive.
     public string Process { get; set; } = "";
+
+    // Optional, case-insensitive text the process command line must contain. Lets several targets share one image,
+    // e.g. dllhost.exe running different COM+ applications: use the AppID GUID from "/Processid:{GUID}".
+    public string? CommandLineContains { get; set; }
 }
 
 public sealed class SymbolOptions

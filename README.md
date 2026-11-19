@@ -49,7 +49,7 @@ CPU-burning targets for verifying the profiler (add the process to `Agent:Proces
 - `test-apps\busy-net10`: .NET 10 (`dotnet build -c Release`, process `busy`).
 - `test-apps\busy-netfx`: .NET Framework 4.x (`.\build.ps1`, output in `out\`, process `FxBusy`).
 - `test-apps\busy-native`: native C++ (open `BusyNative.vcxproj` in Visual Studio, or run `.\build.ps1`; output and PDB in `out\`, process `BusyNative`). Use this to check PDB-based symbolization of native frames.
-- `test-apps\busy-com`: ATL in-proc COM DLL hosted in a `dllhost.exe` surrogate. Run `.\build.ps1`, then `.\register.ps1` (HKCU, no admin; `-Unregister` removes it), then start `out\BusyComClient.exe`. Profiles appear under the `com-demo` target (`dllhost.exe`) with `CBusy::Compute` and its callees resolved from the DLL's PDB.
+- `test-apps\busy-com`: ATL in-proc COM DLL hosted in a `dllhost.exe` surrogate. Run `.\build.ps1`, then `.\register.ps1` (HKCU, no admin; `-Unregister` removes it), then start `out\BusyComClient.exe`. Profiles appear under the `com-demo` target (`dllhost.exe`) with `CBusy::Compute` and its callees resolved from the DLL's PDB. A target may set `CommandLineContains` (e.g. the AppID GUID in `dllhost.exe /Processid:{GUID}`) so each COM+ application gets its own service name.
 
 Run `test-apps\launch.ps1` to build (if needed) and start all of them; `-Stop` stops them, `-Rebuild` forces rebuilds. The default `Targets` in `appsettings.json` cover all three apps. The .NET apps also allocate and contend on a lock, to exercise the allocation and contention profiles.
 
