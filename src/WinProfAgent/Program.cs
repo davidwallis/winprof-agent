@@ -1,4 +1,5 @@
 using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
 using WinProfAgent;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -18,7 +19,7 @@ if (metricsOptions.Enabled)
 {
     builder.Services.AddOpenTelemetry().WithMetrics(m =>
     {
-        m.AddMeter(AgentMetrics.MeterName).AddRuntimeInstrumentation();
+        m.ConfigureResource(r => r.AddService("winprof-agent")).AddMeter(AgentMetrics.MeterName).AddRuntimeInstrumentation();
         m.AddOtlpExporter((exporter, reader) =>
         {
             if (!string.IsNullOrEmpty(metricsOptions.OtlpEndpoint)) exporter.Endpoint = new Uri(metricsOptions.OtlpEndpoint);
