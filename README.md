@@ -55,4 +55,4 @@ Run `test-apps\launch.ps1` to build (if needed) and start all of them; `-Stop` s
 
 ## Status
 
-Capture, symbolization (TraceLog + PDBs), pprof encoding and Pyroscope push are implemented. The pprof encoder is validated with `go tool pprof`. Managed, native and kernel frames are verified end to end against Pyroscope. Native C++ and an ATL COM server in a dllhost surrogate are verified. Still untested: VB6, full COM+ applications, running as a service, and OTLP export.
+Capture, symbolization (TraceLog + PDBs), pprof encoding and Pyroscope push are implemented. The pprof encoder is validated with `go tool pprof`. Managed, native and kernel frames are verified end to end against Pyroscope. Native C++ and an ATL COM server in a dllhost surrogate are verified. Running as a Windows service and OTLP metrics export (service name `winprof-agent`, checked against an OpenTelemetry Collector) are verified. Still untested: VB6 and full COM+ applications.
