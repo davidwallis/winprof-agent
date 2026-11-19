@@ -10,6 +10,12 @@ public sealed class AgentOptions
     public int SessionRecycleWindows { get; set; } = 30;
     public bool CollectAllocations { get; set; } = true;
     public bool CollectContentions { get; set; } = true;
+
+    // Native-capable profiles built from kernel events with stacks. Disk and network are cheap; wait time
+    // (off-CPU: context switches) is high volume, so it is off by default.
+    public bool CollectDisk { get; set; } = true;
+    public bool CollectNetwork { get; set; } = true;
+    public bool CollectWaits { get; set; } = false;
     public PyroscopeOptions Pyroscope { get; set; } = new();
     public ProcessFilter Processes { get; set; } = new();
     public SymbolOptions Symbols { get; set; } = new();

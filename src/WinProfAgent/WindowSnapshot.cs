@@ -29,6 +29,9 @@ public sealed class ProcessSnapshot
     public List<StackSample> Stacks { get; } = new();
     public List<StackSample> AllocStacks { get; } = new();
     public List<StackSample> ContentionStacks { get; } = new();
+    public List<StackSample> DiskStacks { get; } = new();    // Count = operations, Value = bytes
+    public List<StackSample> NetworkStacks { get; } = new(); // Count = operations, Value = bytes
+    public List<StackSample> WaitStacks { get; } = new();    // Count = waits, Value = nanoseconds
 }
 
 /// <summary>Everything needed to symbolize and encode a window, independent of the ETW TraceLog.</summary>

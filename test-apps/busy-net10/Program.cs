@@ -1,9 +1,12 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 
 var end = DateTime.UtcNow.AddSeconds(300);
 double total = 0;
 Busy.StartLockHolder();
+Busy.StartIoThreads();
 while (DateTime.UtcNow < end) total += Busy.Iteration();
 Console.WriteLine(total);
 
@@ -48,6 +51,59 @@ static class Busy
     }
 
     static readonly object Gate = new();
+
+    // Writes and reads a temp file, and echoes bytes over loopback TCP, so disk and network profiles have data.
+    public static void StartIoThreads()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "winprof-busy-io.bin");
+        new Thread(() =>
+        {
+            var buf = new byte[256 * 1024];
+            while (true)
+            {
+                WriteFile(path, buf);
+                ReadFile(path, buf);
+                Thread.Sleep(50);
+            }
+        }) { IsBackground = true }.Start();
+
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        new Thread(() =>
+        {
+            using var c = listener.AcceptTcpClient();
+            var s = c.GetStream();
+            var b = new byte[16 * 1024];
+            int n;
+            while ((n = s.Read(b, 0, b.Length)) > 0) s.Write(b, 0, n);
+        }) { IsBackground = true }.Start();
+        new Thread(() =>
+        {
+            using var c = new TcpClient();
+            c.Connect((IPEndPoint)listener.LocalEndpoint);
+            var s = c.GetStream();
+            var b = new byte[16 * 1024];
+            while (true)
+            {
+                SendEcho(s, b);
+                Thread.Sleep(20);
+            }
+        }) { IsBackground = true }.Start();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void WriteFile(string path, byte[] buf) => File.WriteAllBytes(path, buf);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int ReadFile(string path, byte[] buf) => File.ReadAllBytes(path).Length;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void SendEcho(NetworkStream s, byte[] b)
+    {
+        s.Write(b, 0, b.Length);
+        var read = 0;
+        while (read < b.Length) read += s.Read(b, read, b.Length - read);
+    }
 
     // Holds the lock for 30 ms at a time so Contend() has to wait for it.
     public static void StartLockHolder() =>

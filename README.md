@@ -19,7 +19,11 @@ Targets: C++, VB6 (native-compiled), .NET Framework, .NET (Core), including COM 
 
 - `process_cpu` (all runtimes): kernel sampling; interval is measured from the data.
 - `memory:alloc_objects` / `memory:alloc_space` (.NET only): CLR allocation ticks (~every 100 KB), with the allocated type as the leaf frame. Disable with `Agent:CollectAllocations=false`.
-- `mutex:contentions` / `mutex:delay` (.NET only): CLR lock contention. Disable with `Agent:CollectContentions=false`.
+- `mutex:contentions` / `mutex:delay` (.NET only): CLR lock contention. Disable with Agent:CollectContentions=false.
+- disk_bytes / 
+etwork_bytes (all runtimes): file read/write and TCP/UDP send/receive, each with a disk_operations / 
+etwork_operations count. Stacks end in a ead/write/	cp send... leaf frame. Disable with Agent:CollectDisk=false / Agent:CollectNetwork=false.
+- wait_time (off-CPU, opt-in with Agent:CollectWaits=true): time threads spend blocked, from context switches. High event volume, so off by default.
 
 ## Known limits
 

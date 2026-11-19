@@ -131,6 +131,9 @@ public sealed class SymbolWorker : BackgroundService
         }
 
         SampleType[] allocTypes = [new("alloc_objects", "count"), new("alloc_space", "bytes")];
+        SampleType[] ioTypes = [new("disk_operations", "count"), new("disk_bytes", "bytes")];
+        SampleType[] netTypes = [new("network_operations", "count"), new("network_bytes", "bytes")];
+        SampleType[] waitTypes = [new("waits", "count"), new("wait_time", "nanoseconds")];
         SampleType[] contentionTypes = [new("contentions", "count"), new("delay", "nanoseconds")];
 
         foreach (var p in snap.Processes)
@@ -139,6 +142,9 @@ public sealed class SymbolWorker : BackgroundService
             totalSamples += p.Stacks.Sum(s => s.Count);
 
             Emit(p, p.AllocStacks, new PprofBuilder(allocTypes, new("space", "bytes")), st => [st.Count, st.Value], 1);
+            Emit(p, p.DiskStacks, new PprofBuilder(ioTypes, new("bytes", "bytes")), st => [st.Count, st.Value], 1);
+            Emit(p, p.NetworkStacks, new PprofBuilder(netTypes, new("bytes", "bytes")), st => [st.Count, st.Value], 1);
+            Emit(p, p.WaitStacks, new PprofBuilder(waitTypes, new("wait_time", "nanoseconds")), st => [st.Count, st.Value], 1);
             Emit(p, p.ContentionStacks, new PprofBuilder(contentionTypes, new("contentions", "count")), st => [st.Count, st.Value], 1);
         }
 

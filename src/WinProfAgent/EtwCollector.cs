@@ -39,6 +39,15 @@ public sealed class EtwCollector(
     }
 
     /// <summary>One ETW session lifetime: runs N windows, then returns so the TraceLog memory can be released.</summary>
+    private static readonly Guid KernelNetworkProvider = new("7dd42a49-5329-4832-8dfd-43d979153a88");
+
+    // Microsoft-Windows-Kernel-Network event ids for data sent/received (IPv4 and IPv6).
+    private static readonly Dictionary<int, string> NetworkEvents = new()
+    {
+        [10] = "tcp send", [11] = "tcp recv", [26] = "tcp send", [27] = "tcp recv",
+        [42] = "udp send", [43] = "udp recv", [58] = "udp send", [59] = "udp recv",
+    };
+
     private const int AllocationTickEventId = 10;
     private const int ContentionStartEventId = 81;
 
@@ -55,11 +64,28 @@ public sealed class EtwCollector(
         };
         using var reg = ct.Register(() => TryStop(session));
 
-        session.EnableKernelProvider(
-            KernelTraceEventParser.Keywords.Profile |
+        var kernelKeywords = KernelTraceEventParser.Keywords.Profile |
             KernelTraceEventParser.Keywords.ImageLoad |
-            KernelTraceEventParser.Keywords.Process,
-            KernelTraceEventParser.Keywords.Profile);
+            KernelTraceEventParser.Keywords.Process;
+        var kernelStacks = KernelTraceEventParser.Keywords.Profile;
+        if (_opt.CollectDisk)
+        {
+            kernelKeywords |= KernelTraceEventParser.Keywords.FileIOInit;
+            kernelStacks |= KernelTraceEventParser.Keywords.FileIOInit;
+        }
+        if (_opt.CollectWaits)
+        {
+            kernelKeywords |= KernelTraceEventParser.Keywords.ContextSwitch;
+            kernelStacks |= KernelTraceEventParser.Keywords.ContextSwitch;
+        }
+        session.EnableKernelProvider(kernelKeywords, kernelStacks);
+
+        if (_opt.CollectNetwork)
+        {
+            // The classic kernel TCP/IP events carry no stacks, so use the manifest-based provider instead.
+            var netOptions = new TraceEventProviderOptions { StacksEnabled = true, EventIDStacksToEnable = NetworkEvents.Keys.ToList() };
+            session.EnableProvider(KernelNetworkProvider, TraceEventLevel.Informational, 0x30, netOptions);
+        }
 
         // Runtime events give managed (JIT) method names; rundown covers processes that started before us.
         var clrKeywords = ClrTraceEventParser.Keywords.Jit | ClrTraceEventParser.Keywords.NGen | ClrTraceEventParser.Keywords.Loader;
@@ -115,18 +141,21 @@ public sealed class EtwCollector(
         var gaps = new List<double>();
 
         var commandLines = new Dictionary<int, string>();
+        var imageNames = new Dictionary<int, string>();
         source.Kernel.ProcessStartGroup += p =>
         {
+            if (!string.IsNullOrEmpty(p.ProcessName)) imageNames[p.ProcessID] = p.ProcessName;
             if (!string.IsNullOrEmpty(p.CommandLine)) commandLines[p.ProcessID] = p.CommandLine;
             processNames.Remove(p.ProcessID);
         };
         source.Kernel.ProcessStop += p =>
         {
             commandLines.Remove(p.ProcessID);
+            imageNames.Remove(p.ProcessID);
             processNames.Remove(p.ProcessID);
         };
 
-        string? ServiceFor(int pid, string processName)
+        string? ServiceFor(int pid, string? processName)
         {
             if (processNames.TryGetValue(pid, out var name)) return name;
             var image = NormalizeName(processName, pid);
@@ -199,6 +228,50 @@ public sealed class EtwCollector(
             };
         }
 
+        void AddKernel(Dictionary<(int Pid, CallStackIndex Stack, string Kind), (long Count, long Value)> map, TraceEvent e, int pid, string kind, long value)
+        {
+            if (pid <= 0 || ServiceFor(pid, e.ProcessName) is null) return;
+            var stack = e.CallStack();
+            data.CountKernel(kind, stack is not null);
+            if (stack is null) return;
+            ref var v = ref CollectionsMarshal.GetValueRefOrAddDefault(map, (pid, stack.CallStackIndex, kind), out _);
+            v = (v.Count + 1, v.Value + value);
+        }
+
+        if (_opt.CollectDisk)
+        {
+            source.Kernel.FileIORead += e => AddKernel(data.Disk, e, e.ProcessID, "read", e.IoSize);
+            source.Kernel.FileIOWrite += e => AddKernel(data.Disk, e, e.ProcessID, "write", e.IoSize);
+        }
+        if (_opt.CollectNetwork)
+        {
+            source.Dynamic.All += e =>
+            {
+                if (e.ProviderGuid != KernelNetworkProvider || !NetworkEvents.TryGetValue((int)e.ID, out var kind)) return;
+                var size = Convert.ToInt64(e.PayloadByName("size") ?? 0);
+                AddKernel(data.Network, e, e.ProcessID, kind, size);
+            };
+        }
+        if (_opt.CollectWaits)
+        {
+            // The stack on a context switch is the outgoing thread's wait stack; the wait ends when that thread is next switched in.
+            var waiting = new Dictionary<int, (int Pid, CallStackIndex Stack, double Ms)>();
+            source.Kernel.ThreadCSwitch += e =>
+            {
+                if (waiting.Remove(e.NewThreadID, out var w))
+                {
+                    ref var v = ref CollectionsMarshal.GetValueRefOrAddDefault(data.Waits, (w.Pid, w.Stack), out _);
+                    v = (v.Count + 1, v.Value + (long)((e.TimeStampRelativeMSec - w.Ms) * 1_000_000));
+                }
+                var oldPid = e.ProcessID;
+                if (oldPid <= 0 || e.ThreadID <= 0 || ServiceFor(oldPid, imageNames.GetValueOrDefault(oldPid)) is null) return;
+                var stack = e.CallStack();
+                data.CountKernel("wait", stack is not null);
+                if (stack is null) return;
+                waiting[e.ThreadID] = (oldPid, stack.CallStackIndex, e.TimeStampRelativeMSec);
+            };
+        }
+
         source.Kernel.PerfInfoSample += d =>
         {
             if (allocPending.Count + contentionPending.Count > 0) DrainPending(d.TimeStampRelativeMSec);
@@ -266,15 +339,29 @@ public sealed class EtwCollector(
         public Dictionary<(int Pid, CallStackIndex Stack), int> Cpu { get; } = new();
         public Dictionary<(int Pid, CallStackIndex Stack, string Type), (long Objects, long Bytes)> Allocs { get; } = new();
         public Dictionary<(int Pid, CallStackIndex Stack), (long Count, long Nanos)> Contentions { get; } = new();
+        public Dictionary<(int Pid, CallStackIndex Stack, string Kind), (long Count, long Value)> Disk { get; } = new();
+        public Dictionary<(int Pid, CallStackIndex Stack, string Kind), (long Count, long Value)> Network { get; } = new();
+        public Dictionary<(int Pid, CallStackIndex Stack), (long Count, long Value)> Waits { get; } = new();
         public long AllocEvents, AllocNoStack, ContentionEvents, ContentionNoStack;
-        public bool IsEmpty => Cpu.Count == 0 && Allocs.Count == 0 && Contentions.Count == 0;
+        public Dictionary<string, (long Events, long NoStack)> Kernel { get; } = new();
+        public void CountKernel(string kind, bool hasStack)
+        {
+            Kernel.TryGetValue(kind, out var k);
+            Kernel[kind] = (k.Events + 1, k.NoStack + (hasStack ? 0 : 1));
+        }
+        public bool IsEmpty => Cpu.Count == 0 && Allocs.Count == 0 && Contentions.Count == 0 &&
+            Disk.Count == 0 && Network.Count == 0 && Waits.Count == 0;
 
         public void Clear()
         {
             Cpu.Clear();
             Allocs.Clear();
             Contentions.Clear();
+            Disk.Clear();
+            Network.Clear();
+            Waits.Clear();
             AllocEvents = AllocNoStack = ContentionEvents = ContentionNoStack = 0;
+            Kernel.Clear();
         }
     }
 
@@ -288,8 +375,9 @@ public sealed class EtwCollector(
         long periodNanos,
         ManagedMethodMap methods)
     {
-        logger.LogInformation("Window events: alloc ticks {A} ({AN} without stack), contentions {C} ({CN} without stack)",
-            data.AllocEvents, data.AllocNoStack, data.ContentionEvents, data.ContentionNoStack);
+        logger.LogInformation("Window events: alloc ticks {A} ({AN} without stack), contentions {C} ({CN} without stack), kernel (events/without stack): {K}",
+            data.AllocEvents, data.AllocNoStack, data.ContentionEvents, data.ContentionNoStack,
+            string.Join(", ", data.Kernel.Select(k => $"{k.Key} {k.Value.Events}/{k.Value.NoStack}")));
         var frames = new List<FrameInfo>();
         var frameIds = new Dictionary<(int Pid, CodeAddressIndex Index), int>();
         var typeFrameIds = new Dictionary<string, int>();
@@ -343,6 +431,18 @@ public sealed class EtwCollector(
         foreach (var ((pid, stack), v) in data.Contentions)
         {
             if (Walk(pid, stack, null) is { } f) Proc(pid).ContentionStacks.Add(new StackSample { Frames = f, Count = v.Count, Value = v.Nanos });
+        }
+        foreach (var ((pid, stack, kind), v) in data.Disk)
+        {
+            if (Walk(pid, stack, kind) is { } f) Proc(pid).DiskStacks.Add(new StackSample { Frames = f, Count = v.Count, Value = v.Value });
+        }
+        foreach (var ((pid, stack, kind), v) in data.Network)
+        {
+            if (Walk(pid, stack, kind) is { } f) Proc(pid).NetworkStacks.Add(new StackSample { Frames = f, Count = v.Count, Value = v.Value });
+        }
+        foreach (var ((pid, stack), v) in data.Waits)
+        {
+            if (Walk(pid, stack, null) is { } f) Proc(pid).WaitStacks.Add(new StackSample { Frames = f, Count = v.Count, Value = v.Value });
         }
         // Downloads are only ever allowed for processes explicitly listed in Targets.
         var allowDownload = _opt.Symbols.AllowDownload && _opt.Processes.Targets.Count > 0;
