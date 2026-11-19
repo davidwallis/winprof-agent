@@ -2,7 +2,7 @@ namespace WinProfAgent;
 
 public sealed class AgentOptions
 {
-    public int WindowSeconds { get; set; } = 60;
+    public int WindowSeconds { get; set; } = 15;
     public int SampleHz { get; set; } = 100;
     public int BufferSizeMB { get; set; } = 64;
     public int QueueCapacity { get; set; } = 100;
