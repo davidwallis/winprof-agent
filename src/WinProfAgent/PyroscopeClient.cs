@@ -32,7 +32,7 @@ public sealed class PyroscopeClient(HttpClient http, IOptions<AgentOptions> opti
         if (!resp.IsSuccessStatusCode)
         {
             var body = await resp.Content.ReadAsStringAsync(ct);
-            throw new HttpRequestException($"Pyroscope returned {(int)resp.StatusCode}: {body}");
+            throw new HttpRequestException($"Pyroscope returned {(int)resp.StatusCode}: {body}", null, resp.StatusCode);
         }
     }
 
@@ -95,8 +95,15 @@ public sealed class PushWorker(
                     {
                         metrics.PushFailures.Add(1);
                         logger.LogWarning(ex, "Push of {App} failed (attempt {Attempt}/{Max})", p.AppName, attempt, attempts);
-                        if (attempt == attempts) metrics.ProfilesDropped.Add(1);
-                        else await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), stoppingToken);
+                        // Client errors (e.g. a profile outside the ingestion window) will never succeed on retry.
+                        var permanent = ex is HttpRequestException { StatusCode: { } sc } && (int)sc is >= 400 and < 500 && (int)sc != 429 && (int)sc != 408;
+                        if (permanent || attempt == attempts)
+                        {
+                            metrics.ProfilesDropped.Add(1);
+                            break;
+                        }
+
+                        await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), stoppingToken);
                     }
                 }
             }
