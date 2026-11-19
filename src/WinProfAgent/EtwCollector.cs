@@ -1,19 +1,18 @@
 using System.Diagnostics;
-using Microsoft.Diagnostics.Symbols;
+using System.Runtime.InteropServices;
 using Microsoft.Diagnostics.Tracing;
+using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Session;
-using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Extensions.Options;
-using WinProfAgent.Pprof;
 
 namespace WinProfAgent;
 
 public sealed class EtwCollector(
     IOptions<AgentOptions> options,
-    ProfileQueue queue,
+    SnapshotQueue snapshots,
     AgentMetrics metrics,
     ILogger<EtwCollector> logger) : BackgroundService
 {
@@ -45,7 +44,6 @@ public sealed class EtwCollector(
         var window = TimeSpan.FromSeconds(Math.Max(1, _opt.WindowSeconds));
         var maxWindows = Math.Max(1, _opt.SessionRecycleWindows);
         var periodNanos = 1_000_000_000L / Math.Max(1, _opt.SampleHz);
-        var host = Environment.MachineName;
 
         using var session = new TraceEventSession("WinProfAgent")
         {
@@ -70,17 +68,8 @@ public sealed class EtwCollector(
         using var source = TraceLog.CreateFromTraceEventSession(session);
         var log = source.TraceLog;
 
-        var symbolPath = BuildSymbolPath(_opt.Symbols);
-        using var symbolReader = new SymbolReader(TextWriter.Null, symbolPath)
-        {
-            SecurityCheck = _ => true,
-            Options = _opt.Symbols.AllowDownload ? SymbolReaderOptions.None : SymbolReaderOptions.CacheOnly,
-        };
-
         var counts = new Dictionary<(int Pid, CallStackIndex Stack), int>();
         var processNames = new Dictionary<int, string>();
-        var nameCache = new Dictionary<CodeAddressIndex, string>();
-        var symbolizedModules = new HashSet<ModuleFileIndex>();
         var windowStart = DateTimeOffset.UtcNow;
         var windowsDone = 0;
         long lastLost = 0;
@@ -100,13 +89,13 @@ public sealed class EtwCollector(
             var stack = data.CallStack();
             if (stack is null) return;
 
-            ref var c = ref System.Runtime.InteropServices.CollectionsMarshal.GetValueRefOrAddDefault(counts, (pid, stack.CallStackIndex), out _);
+            ref var c = ref CollectionsMarshal.GetValueRefOrAddDefault(counts, (pid, stack.CallStackIndex), out _);
             c++;
 
             var now = DateTimeOffset.UtcNow;
             if (now - windowStart < window) return;
 
-            Flush(counts, processNames, nameCache, symbolizedModules, log, symbolReader, windowStart, now, periodNanos, host);
+            Snapshot(counts, processNames, log, windowStart, now, periodNanos);
             counts.Clear();
             windowStart = now;
             windowsDone++;
@@ -121,103 +110,80 @@ public sealed class EtwCollector(
         logger.LogInformation("ETW session started: {Hz} Hz, {Window}s windows", _opt.SampleHz, window.TotalSeconds);
         source.Process();
 
-        if (counts.Count > 0)
-        {
-            Flush(counts, processNames, nameCache, symbolizedModules, log, symbolReader, windowStart, DateTimeOffset.UtcNow, periodNanos, host);
-        }
+        if (counts.Count > 0) Snapshot(counts, processNames, log, windowStart, DateTimeOffset.UtcNow, periodNanos);
     }
 
-    private void Flush(
+    /// <summary>Runs on the event thread: copies what the symbol worker needs and returns without touching PDBs.</summary>
+    private void Snapshot(
         Dictionary<(int Pid, CallStackIndex Stack), int> counts,
         Dictionary<int, string> processNames,
-        Dictionary<CodeAddressIndex, string> nameCache,
-        HashSet<ModuleFileIndex> symbolizedModules,
         TraceLog log,
-        SymbolReader reader,
         DateTimeOffset from,
         DateTimeOffset until,
-        long periodNanos,
-        string host)
+        long periodNanos)
     {
-        var sw = Stopwatch.StartNew();
-        long totalSamples = 0;
-        var builders = new Dictionary<int, PprofBuilder>();
-        var frames = new List<string>();
+        var frames = new List<FrameInfo>();
+        var frameIds = new Dictionary<CodeAddressIndex, int>();
+        var processes = new Dictionary<int, ProcessSnapshot>();
+        var ids = new List<int>();
 
         foreach (var ((pid, stackIndex), count) in counts)
         {
-            frames.Clear();
+            ids.Clear();
             for (var cs = log.CallStacks[stackIndex]; cs != null; cs = cs.Caller)
             {
-                frames.Add(Resolve(cs.CodeAddress, nameCache, symbolizedModules, log, reader));
+                var ca = cs.CodeAddress;
+                if (!frameIds.TryGetValue(ca.CodeAddressIndex, out var id))
+                {
+                    id = frames.Count;
+                    frames.Add(DescribeFrame(ca));
+                    frameIds[ca.CodeAddressIndex] = id;
+                }
+                ids.Add(id);
             }
+            if (ids.Count == 0) continue;
 
-            if (!builders.TryGetValue(pid, out var b)) builders[pid] = b = new PprofBuilder();
-            b.AddSample(frames, count * periodNanos);
-            totalSamples += count;
-        }
-
-        foreach (var (pid, b) in builders)
-        {
-            var name = processNames[pid];
-            var labels = new Dictionary<string, string>(_opt.Pyroscope.Labels)
+            if (!processes.TryGetValue(pid, out var p))
             {
-                ["host"] = host,
-                ["pid"] = pid.ToString(),
-                ["process"] = name,
-            };
-
-            var bytes = b.Build(from, until - from, periodNanos);
-            metrics.ProfileBytes.Record(bytes.Length);
-            queue.TryWrite(new ProfilePayload(name, labels, from, until, bytes));
+                processes[pid] = p = new ProcessSnapshot { Pid = pid, Name = processNames[pid] };
+            }
+            p.Stacks.Add(new StackSample { Frames = ids.ToArray(), Count = count });
         }
 
-        metrics.Samples.Add(totalSamples);
-        metrics.Windows.Add(1);
-        metrics.WindowProcessingDuration.Record(sw.Elapsed.TotalSeconds);
-        logger.LogInformation("Window flushed: {Processes} processes, {Samples} samples, {Ms} ms",
-            builders.Count, totalSamples, sw.ElapsedMilliseconds);
+        // Downloads are only ever allowed for processes explicitly listed in Include.
+        var allowDownload = _opt.Symbols.AllowDownload && _opt.Processes.Include.Count > 0;
+
+        snapshots.TryWrite(new WindowSnapshot
+        {
+            From = from,
+            Until = until,
+            PeriodNanos = periodNanos,
+            Host = Environment.MachineName,
+            AllowDownload = allowDownload,
+            Frames = frames.ToArray(),
+            Processes = processes.Values.ToList(),
+        });
     }
 
-    private static string Resolve(
-        TraceCodeAddress ca,
-        Dictionary<CodeAddressIndex, string> cache,
-        HashSet<ModuleFileIndex> symbolized,
-        TraceLog log,
-        SymbolReader reader)
+    private static FrameInfo DescribeFrame(TraceCodeAddress ca)
     {
-        if (cache.TryGetValue(ca.CodeAddressIndex, out var cached)) return cached;
-
         var module = ca.ModuleFile;
-        if (ca.Method is null && module is not null && symbolized.Add(module.ModuleFileIndex))
+
+        // Managed (JIT) frames already have a method name from the runtime events.
+        var managed = ca.FullMethodName;
+        if (!string.IsNullOrEmpty(managed)) return new FrameInfo { Name = managed };
+
+        if (module is null) return new FrameInfo { Name = $"0x{ca.Address:x}" };
+
+        return new FrameInfo
         {
-            try { log.CodeAddresses.LookupSymbolsForModule(reader, module); }
-            catch { /* unresolved modules fall back to module+offset */ }
-        }
-
-        var name = ca.FullMethodName;
-        if (string.IsNullOrEmpty(name))
-        {
-            name = module is null ? $"0x{ca.Address:x}" : $"{module.Name}+0x{ca.Address - module.ImageBase:x}";
-        }
-
-        cache[ca.CodeAddressIndex] = name;
-        return name;
-    }
-
-    private static string BuildSymbolPath(SymbolOptions o)
-    {
-        if (o.AllowDownload) return string.Join(';', o.PdbSearchPaths);
-
-        // Offline: reduce SRV*cache*url entries to the local cache folder.
-        var paths = new List<string>();
-        foreach (var p in o.PdbSearchPaths)
-        {
-            if (!p.StartsWith("SRV*", StringComparison.OrdinalIgnoreCase)) { paths.Add(p); continue; }
-            paths.AddRange(p.Split('*', StringSplitOptions.RemoveEmptyEntries).Skip(1)
-                .Where(s => !s.StartsWith("http", StringComparison.OrdinalIgnoreCase)));
-        }
-        return string.Join(';', paths);
+            ModuleName = module.Name,
+            ModulePath = module.FilePath,
+            PdbName = module.PdbName,
+            PdbGuid = module.PdbSignature,
+            PdbAge = module.PdbAge,
+            Rva = (uint)(ca.Address - module.ImageBase),
+        };
     }
 
     private bool Allowed(string name)

@@ -9,7 +9,9 @@ Targets: C++, VB6 (native-compiled), .NET Framework, .NET (Core), including COM 
 - .NET 10 Worker Service, runs as SYSTEM (needs `SeSystemProfilePrivilege`).
 - Direct real-time ETW session via TraceEvent (kernel sampled profile with stacks, image load, CLR rundown). Does not shell out to `wpr.exe`.
 - Rolling windows (`Agent:WindowSeconds`); each window is converted to one pprof profile per process and pushed to Pyroscope.
-- Symbols from PDBs in `Agent:Symbols:PdbSearchPaths`. Downloading is off by default (`Symbols:AllowDownload: false`): only local folders are used, and `SRV*cache*url` entries are reduced to their local cache folder. Set `AllowDownload: true` to fetch from a symbol server.
+- Symbolization runs on a background thread (`SymbolWorker`); the ETW event thread only snapshots each window.
+- PDB lookup order: beside the binary, `Symbols:PdbSearchPaths`, then `Symbols:SymbolFolder` (default `C:\symbols`, also the download target). With `AllowDownload: true`, missing PDBs are fetched from `Symbols:SymbolServers` in order of preference, only for processes in `Processes:Include` (an empty Include disables downloads).
+- A missing PDB is logged once per module (retried after `MissingRetryMinutes`) and counted in `winprof.symbols.missing`.
 - Configured through `appsettings.json` (plus environment variables).
 
 ## Known limits
@@ -45,4 +47,4 @@ Create a dev cert with `New-SelfSignedCertificate -Type CodeSigningCert -Subject
 
 ## Status
 
-Capture, symbolization (TraceLog + PDBs), pprof encoding and Pyroscope push are implemented. The pprof encoder is validated with `go tool pprof`. The live ETW path needs testing on an elevated machine, especially native module symbolization for processes that started before the service (real-time sessions don't receive image-ID rundown events).
+Capture, symbolization (TraceLog + PDBs), pprof encoding and Pyroscope push are implemented. The pprof encoder is validated with `go tool pprof`. Managed, native and kernel frames are verified end to end against Pyroscope. Still untested: VB6, native C++ and COM+ targets, running as a service, and OTLP export.

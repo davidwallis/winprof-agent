@@ -6,6 +6,7 @@ public sealed class AgentOptions
     public int SampleHz { get; set; } = 100;
     public int BufferSizeMB { get; set; } = 64;
     public int QueueCapacity { get; set; } = 100;
+    public int SnapshotQueueCapacity { get; set; } = 4;
     public int SessionRecycleWindows { get; set; } = 30;
     public PyroscopeOptions Pyroscope { get; set; } = new();
     public ProcessFilter Processes { get; set; } = new();
@@ -38,8 +39,18 @@ public sealed class ProcessFilter
 
 public sealed class SymbolOptions
 {
+    // Local symbol store: searched first and used as the download cache. PDBs next to the profiled binary are always checked.
+    public string SymbolFolder { get; set; } = @"C:\symbols";
+
+    // Extra local folders searched before the symbol folder.
     public List<string> PdbSearchPaths { get; set; } = new();
 
-    // When false, symbol server URLs are ignored; only local folders (and SRV* cache folders) are used.
-    public bool AllowDownload { get; set; } = false;
+    // Only applies to processes listed in Processes:Include; with an empty Include list downloads are disabled.
+    public bool AllowDownload { get; set; } = true;
+
+    // Symbol servers in order of preference.
+    public List<string> SymbolServers { get; set; } = new() { "https://msdl.microsoft.com/download/symbols" };
+
+    // How long a module with no PDB is skipped before being looked up again.
+    public int MissingRetryMinutes { get; set; } = 10;
 }

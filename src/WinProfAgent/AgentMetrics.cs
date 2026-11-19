@@ -13,6 +13,9 @@ public sealed class AgentMetrics
     public Counter<long> ProfilesPushed { get; }
     public Counter<long> PushFailures { get; }
     public Counter<long> ProfilesDropped { get; }
+    public Counter<long> WindowsDropped { get; }
+    public Counter<long> SymbolsMissing { get; }
+    public Counter<long> SymbolsDownloaded { get; }
     public Counter<long> EventsLost { get; }
     public Counter<long> SessionRestarts { get; }
     public Histogram<double> PushDuration { get; }
@@ -26,6 +29,9 @@ public sealed class AgentMetrics
         ProfilesPushed = _meter.CreateCounter<long>("winprof.profiles.pushed", "{profile}", "Profiles pushed to Pyroscope");
         PushFailures = _meter.CreateCounter<long>("winprof.push.failures", "{failure}", "Failed push attempts");
         ProfilesDropped = _meter.CreateCounter<long>("winprof.profiles.dropped", "{profile}", "Profiles dropped after retries or queue overflow");
+        WindowsDropped = _meter.CreateCounter<long>("winprof.windows.dropped", "{window}", "Windows dropped because symbolization could not keep up");
+        SymbolsMissing = _meter.CreateCounter<long>("winprof.symbols.missing", "{module}", "Modules with no PDB found");
+        SymbolsDownloaded = _meter.CreateCounter<long>("winprof.symbols.downloaded", "{module}", "PDBs downloaded from a symbol server");
         EventsLost = _meter.CreateCounter<long>("winprof.etw.events_lost", "{event}", "ETW events lost by the session");
         SessionRestarts = _meter.CreateCounter<long>("winprof.etw.session_restarts", "{restart}", "ETW session recycles");
         PushDuration = _meter.CreateHistogram<double>("winprof.push.duration", "s", "Duration of a successful push");

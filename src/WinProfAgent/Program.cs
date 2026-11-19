@@ -7,8 +7,10 @@ builder.Services.Configure<AgentOptions>(builder.Configuration.GetSection("Agent
 
 builder.Services.AddSingleton<ProfileQueue>();
 builder.Services.AddSingleton<AgentMetrics>();
+builder.Services.AddSingleton<SnapshotQueue>();
 builder.Services.AddHttpClient<PyroscopeClient>(c => c.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddHostedService<PushWorker>();
+builder.Services.AddHostedService<SymbolWorker>();
 builder.Services.AddHostedService<EtwCollector>();
 
 var metricsOptions = builder.Configuration.GetSection("Agent:Metrics").Get<MetricsOptions>() ?? new MetricsOptions();
