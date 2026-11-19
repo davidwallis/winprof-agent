@@ -9,7 +9,7 @@ Targets: C++, VB6 (native-compiled), .NET Framework, .NET (Core), including COM 
 - .NET 10 Worker Service, runs as SYSTEM (needs `SeSystemProfilePrivilege`).
 - Direct real-time ETW session via TraceEvent (kernel sampled profile with stacks, image load, CLR rundown). Does not shell out to `wpr.exe`.
 - Rolling windows (`Agent:WindowSeconds`); each window is converted to one pprof profile per process and pushed to Pyroscope.
-- Symbols from PDBs in `Agent:Symbols:PdbSearchPaths`.
+- Symbols from PDBs in `Agent:Symbols:PdbSearchPaths`. Downloading is off by default (`Symbols:AllowDownload: false`): only local folders are used, and `SRV*cache*url` entries are reduced to their local cache folder. Set `AllowDownload: true` to fetch from a symbol server.
 - Configured through `appsettings.json` (plus environment variables).
 
 ## Known limits

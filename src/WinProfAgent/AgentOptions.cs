@@ -39,4 +39,7 @@ public sealed class ProcessFilter
 public sealed class SymbolOptions
 {
     public List<string> PdbSearchPaths { get; set; } = new();
+
+    // When false, symbol server URLs are ignored; only local folders (and SRV* cache folders) are used.
+    public bool AllowDownload { get; set; } = false;
 }

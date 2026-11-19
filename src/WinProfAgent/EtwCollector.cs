@@ -70,11 +70,11 @@ public sealed class EtwCollector(
         using var source = TraceLog.CreateFromTraceEventSession(session);
         var log = source.TraceLog;
 
-        var symbolPath = string.Join(';', _opt.Symbols.PdbSearchPaths);
+        var symbolPath = BuildSymbolPath(_opt.Symbols);
         using var symbolReader = new SymbolReader(TextWriter.Null, symbolPath)
         {
             SecurityCheck = _ => true,
-            Options = symbolPath.Contains("SRV*", StringComparison.OrdinalIgnoreCase) ? SymbolReaderOptions.None : SymbolReaderOptions.CacheOnly,
+            Options = _opt.Symbols.AllowDownload ? SymbolReaderOptions.None : SymbolReaderOptions.CacheOnly,
         };
 
         var counts = new Dictionary<(int Pid, CallStackIndex Stack), int>();
@@ -203,6 +203,21 @@ public sealed class EtwCollector(
 
         cache[ca.CodeAddressIndex] = name;
         return name;
+    }
+
+    private static string BuildSymbolPath(SymbolOptions o)
+    {
+        if (o.AllowDownload) return string.Join(';', o.PdbSearchPaths);
+
+        // Offline: reduce SRV*cache*url entries to the local cache folder.
+        var paths = new List<string>();
+        foreach (var p in o.PdbSearchPaths)
+        {
+            if (!p.StartsWith("SRV*", StringComparison.OrdinalIgnoreCase)) { paths.Add(p); continue; }
+            paths.AddRange(p.Split('*', StringSplitOptions.RemoveEmptyEntries).Skip(1)
+                .Where(s => !s.StartsWith("http", StringComparison.OrdinalIgnoreCase)));
+        }
+        return string.Join(';', paths);
     }
 
     private bool Allowed(string name)
