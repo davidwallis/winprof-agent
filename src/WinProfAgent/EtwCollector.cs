@@ -68,6 +68,18 @@ public sealed class EtwCollector(
         using var source = TraceLog.CreateFromTraceEventSession(session);
         var log = source.TraceLog;
 
+        // TraceLog resolves JIT methods lazily and misses processes that started before us, so keep our own table
+        // fed by both the live JIT events and the rundown events emitted when the session starts.
+        var methods = new ManagedMethodMap();
+        void OnMethod(MethodLoadUnloadVerboseTraceData d) =>
+            methods.Add(d.ProcessID, d.MethodStartAddress, d.MethodSize, d.MethodNamespace, d.MethodName, d.MethodSignature);
+        source.Clr.MethodLoadVerbose += OnMethod;
+        source.Clr.MethodDCStartVerboseV2 += OnMethod;
+        source.Clr.MethodDCStopVerboseV2 += OnMethod;
+        var rundown = new ClrRundownTraceEventParser(source);
+        rundown.MethodDCStartVerbose += OnMethod;
+        rundown.MethodDCStopVerbose += OnMethod;
+
         var counts = new Dictionary<(int Pid, CallStackIndex Stack), int>();
         var processNames = new Dictionary<int, string?>();
         var windowStart = DateTimeOffset.UtcNow;
@@ -115,7 +127,7 @@ public sealed class EtwCollector(
             var now = DateTimeOffset.UtcNow;
             if (now - windowStart < window) return;
 
-            Snapshot(counts, processNames, log, windowStart, now, MeasurePeriod(gaps, periodNanos, logger));
+            Snapshot(counts, processNames, log, windowStart, now,             MeasurePeriod(gaps, periodNanos, logger), methods);
             counts.Clear();
             gaps.Clear();
             windowStart = now;
@@ -132,15 +144,15 @@ public sealed class EtwCollector(
         LogTargets(logger);
         source.Process();
 
-        if (counts.Count > 0) Snapshot(counts, processNames, log, windowStart, DateTimeOffset.UtcNow,         MeasurePeriod(gaps, periodNanos, logger));
+        if (counts.Count > 0) Snapshot(counts, processNames, log, windowStart, DateTimeOffset.UtcNow,                 MeasurePeriod(gaps, periodNanos, logger), methods);
     }
 
-            private static long MeasurePeriod(List<double> gaps, long configuredNanos, ILogger logger)
+    private static long MeasurePeriod(List<double> gaps, long configuredNanos, ILogger logger)
     {
-                if (gaps.Count < 100) return configuredNanos;
+        if (gaps.Count < 100) return configuredNanos;
 
-                gaps.Sort();
-                var measured = (long)(gaps[gaps.Count / 2] * 1_000_000);
+        gaps.Sort();
+        var measured = (long)(gaps[gaps.Count / 2] * 1_000_000);
         if (Math.Abs(measured - configuredNanos) > configuredNanos / 5)
         {
             logger.LogWarning("Measured sampling interval {Measured:F2} ms differs from configured {Configured:F2} ms; using the measured value",
@@ -156,10 +168,11 @@ public sealed class EtwCollector(
         TraceLog log,
         DateTimeOffset from,
         DateTimeOffset until,
-        long periodNanos)
+        long periodNanos,
+        ManagedMethodMap methods)
     {
         var frames = new List<FrameInfo>();
-        var frameIds = new Dictionary<CodeAddressIndex, int>();
+        var frameIds = new Dictionary<(int Pid, CodeAddressIndex Index), int>();
         var processes = new Dictionary<int, ProcessSnapshot>();
         var ids = new List<int>();
 
@@ -169,11 +182,11 @@ public sealed class EtwCollector(
             for (var cs = log.CallStacks[stackIndex]; cs != null; cs = cs.Caller)
             {
                 var ca = cs.CodeAddress;
-                if (!frameIds.TryGetValue(ca.CodeAddressIndex, out var id))
+                if (!frameIds.TryGetValue((pid, ca.CodeAddressIndex), out var id))
                 {
                     id = frames.Count;
-                    frames.Add(DescribeFrame(ca));
-                    frameIds[ca.CodeAddressIndex] = id;
+                    frames.Add(DescribeFrame(ca, pid, methods));
+                    frameIds[(pid, ca.CodeAddressIndex)] = id;
                 }
                 ids.Add(id);
             }
@@ -186,8 +199,8 @@ public sealed class EtwCollector(
             p.Stacks.Add(new StackSample { Frames = ids.ToArray(), Count = count });
         }
 
-        // Downloads are only ever allowed for processes         explicitly listed in Targets.
-                var allowDownload = _opt.Symbols.AllowDownload && _opt.Processes.Targets.Count > 0;
+        // Downloads are only ever allowed for processes explicitly listed in Targets.
+        var allowDownload = _opt.Symbols.AllowDownload && _opt.Processes.Targets.Count > 0;
 
         snapshots.TryWrite(new WindowSnapshot
         {
@@ -201,13 +214,17 @@ public sealed class EtwCollector(
         });
     }
 
-    private static FrameInfo DescribeFrame(TraceCodeAddress ca)
+    private static FrameInfo DescribeFrame(TraceCodeAddress ca, int pid, ManagedMethodMap methods)
     {
         var module = ca.ModuleFile;
 
         // Managed (JIT) frames already have a method name from the runtime events.
         var managed = ca.FullMethodName;
         if (!string.IsNullOrEmpty(managed)) return new FrameInfo { Name = managed };
+
+        // Otherwise (e.g. the process started before us) fall back to our own method table.
+        var jitted = methods.Lookup(pid, ca.Address);
+        if (jitted is not null) return new FrameInfo { Name = jitted };
 
         if (module is null) return new FrameInfo { Name = $"0x{ca.Address:x}" };
 
