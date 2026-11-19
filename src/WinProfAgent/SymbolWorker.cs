@@ -73,7 +73,12 @@ public sealed class SymbolWorker : BackgroundService
         {
             _logger.LogWarning("Symbol downloads are disabled because Agent:Processes:Targets is empty");
         }
+
+        // Profiling every process would warn for hundreds of modules; only warn for explicitly targeted processes.
+        _missingLevel = _opt.Processes.Targets.Count > 0 ? LogLevel.Warning : LogLevel.Debug;
     }
+
+    private readonly LogLevel _missingLevel;
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
         Task.Factory.StartNew(() => Run(stoppingToken), TaskCreationOptions.LongRunning).Unwrap();
@@ -184,7 +189,7 @@ public sealed class SymbolWorker : BackgroundService
 
         if (result.Item1 is null && _reportedNoDebugInfo.Add(modulePath))
         {
-            _logger.LogWarning("No debug info (or module file not found) for {Module} at {Path}", moduleName, modulePath);
+            _logger.Log(_missingLevel, "No debug info (or module file not found) for {Module} at {Path}", moduleName, modulePath);
         }
 
         _debugInfo[modulePath] = result;
@@ -235,7 +240,7 @@ public sealed class SymbolWorker : BackgroundService
             if (_reportedMissing.Add(key))
             {
                 _metrics.SymbolsMissing.Add(1, new KeyValuePair<string, object?>("module", f.ModuleName));
-                _logger.LogWarning("No PDB found for {Module} ({Pdb} {Guid} age {Age}){Hint}",
+                _logger.Log(_missingLevel, "No PDB found for {Module} ({Pdb} {Guid} age {Age}){Hint}",
                     f.ModuleName, pdbName, guid, age,
                     allowDownload ? "" : " - downloads not enabled for this process");
             }
