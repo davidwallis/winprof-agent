@@ -484,3 +484,4 @@ $RECYCLE.BIN/
 test-apps/busy-netfx/out/
 test-apps/busy-native/out/
 test-apps/busy-native/obj/
+test-apps/busy-com/out/

@@ -49,9 +49,10 @@ CPU-burning targets for verifying the profiler (add the process to `Agent:Proces
 - `test-apps\busy-net10`: .NET 10 (`dotnet build -c Release`, process `busy`).
 - `test-apps\busy-netfx`: .NET Framework 4.x (`.\build.ps1`, output in `out\`, process `FxBusy`).
 - `test-apps\busy-native`: native C++ (open `BusyNative.vcxproj` in Visual Studio, or run `.\build.ps1`; output and PDB in `out\`, process `BusyNative`). Use this to check PDB-based symbolization of native frames.
+- `test-apps\busy-com`: ATL in-proc COM DLL hosted in a `dllhost.exe` surrogate. Run `.\build.ps1`, then `.\register.ps1` (HKCU, no admin; `-Unregister` removes it), then start `out\BusyComClient.exe`. Profiles appear under the `com-demo` target (`dllhost.exe`) with `CBusy::Compute` and its callees resolved from the DLL's PDB.
 
 Run `test-apps\launch.ps1` to build (if needed) and start all of them; `-Stop` stops them, `-Rebuild` forces rebuilds. The default `Targets` in `appsettings.json` cover all three apps. The .NET apps also allocate and contend on a lock, to exercise the allocation and contention profiles.
 
 ## Status
 
-Capture, symbolization (TraceLog + PDBs), pprof encoding and Pyroscope push are implemented. The pprof encoder is validated with `go tool pprof`. Managed, native and kernel frames are verified end to end against Pyroscope. Still untested: VB6, native C++ and COM+ targets, running as a service, and OTLP export.
+Capture, symbolization (TraceLog + PDBs), pprof encoding and Pyroscope push are implemented. The pprof encoder is validated with `go tool pprof`. Managed, native and kernel frames are verified end to end against Pyroscope. Native C++ and an ATL COM server in a dllhost surrogate are verified. Still untested: VB6, full COM+ applications, running as a service, and OTLP export.

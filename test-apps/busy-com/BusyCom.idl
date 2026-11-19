@@ -1,0 +1,31 @@
+import "oaidl.idl";
+import "ocidl.idl";
+
+[
+    object,
+    uuid(5A6E1B1E-7C0D-4D8E-9B53-0A1D5F7A1C01),
+    dual,
+    nonextensible,
+    pointer_default(unique)
+]
+interface IBusy : IDispatch
+{
+    // Burns CPU for roughly the given number of milliseconds through a few nested calls.
+    [id(1)] HRESULT Compute([in] LONG milliseconds, [out, retval] DOUBLE* result);
+};
+
+[
+    uuid(5A6E1B1E-7C0D-4D8E-9B53-0A1D5F7A1C02),
+    version(1.0)
+]
+library BusyComLib
+{
+    importlib("stdole2.tlb");
+    [
+        uuid(5A6E1B1E-7C0D-4D8E-9B53-0A1D5F7A1C03)
+    ]
+    coclass Busy
+    {
+        [default] interface IBusy;
+    };
+};
