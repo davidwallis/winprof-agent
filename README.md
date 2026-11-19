@@ -45,6 +45,13 @@ Machines enforcing Smart App Control or WDAC may block unsigned builds. The `Sig
 
 Create a dev cert with `New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=winprof-agent dev" -CertStoreLocation Cert:\CurrentUser\My`. For production use your organization's code-signing certificate.
 
+## Test apps
+
+CPU-burning targets for verifying the profiler (set `Agent:Processes:Include` to the process name):
+
+- `test-apps\busy-net10`: .NET 10 (`dotnet build -c Release`, process `busy`).
+- `test-apps\busy-netfx`: .NET Framework 4.x (`.\build.ps1`, output in `out\`, process `FxBusy`).
+
 ## Status
 
 Capture, symbolization (TraceLog + PDBs), pprof encoding and Pyroscope push are implemented. The pprof encoder is validated with `go tool pprof`. Managed, native and kernel frames are verified end to end against Pyroscope. Still untested: VB6, native C++ and COM+ targets, running as a service, and OTLP export.
