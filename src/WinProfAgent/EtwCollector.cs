@@ -75,25 +75,21 @@ public sealed class EtwCollector(
         long lastLost = 0;
 
         // The kernel's sampling interval is system-wide and may differ from what we asked for, so measure it
-        // from the gap between consecutive samples on each CPU (idle CPUs sample too).
-        var lastSampleMs = new Dictionary<int, double>();
-        double gapSumMs = 0;
-        long gapCount = 0;
+        // from the median gap between consecutive non-idle samples on the same CPU (idle CPUs sample sparsely).
+        var lastSample = new Dictionary<int, (double Ms, int Pid)>();
+        var gaps = new List<double>();
 
         source.Kernel.PerfInfoSample += data =>
         {
             var cpu = data.ProcessorNumber;
             var ts = data.TimeStampRelativeMSec;
-            if (lastSampleMs.TryGetValue(cpu, out var prev))
+            var samplePid = data.ProcessID;
+            if (lastSample.TryGetValue(cpu, out var prev) && samplePid > 0 && prev.Pid > 0 && gaps.Count < 50_000)
             {
-                var gap = ts - prev;
-                if (gap > 0 && gap < 100)
-                {
-                    gapSumMs += gap;
-                    gapCount++;
-                }
+                var gap = ts - prev.Ms;
+                if (gap > 0 && gap < 100) gaps.Add(gap);
             }
-            lastSampleMs[cpu] = ts;
+            lastSample[cpu] = (ts, samplePid);
 
             var pid = data.ProcessID;
             if (pid <= 0) return;
@@ -119,10 +115,9 @@ public sealed class EtwCollector(
             var now = DateTimeOffset.UtcNow;
             if (now - windowStart < window) return;
 
-            Snapshot(counts, processNames, log, windowStart, now, MeasurePeriod(gapSumMs, gapCount, periodNanos, logger));
+            Snapshot(counts, processNames, log, windowStart, now, MeasurePeriod(gaps, periodNanos, logger));
             counts.Clear();
-            gapSumMs = 0;
-            gapCount = 0;
+            gaps.Clear();
             windowStart = now;
             windowsDone++;
 
@@ -137,14 +132,15 @@ public sealed class EtwCollector(
         LogTargets(logger);
         source.Process();
 
-        if (counts.Count > 0) Snapshot(counts, processNames, log, windowStart, DateTimeOffset.UtcNow, MeasurePeriod(gapSumMs, gapCount, periodNanos, logger));
+        if (counts.Count > 0) Snapshot(counts, processNames, log, windowStart, DateTimeOffset.UtcNow,         MeasurePeriod(gaps, periodNanos, logger));
     }
 
-    private static long MeasurePeriod(double gapSumMs, long gapCount, long configuredNanos, ILogger logger)
+            private static long MeasurePeriod(List<double> gaps, long configuredNanos, ILogger logger)
     {
-        if (gapCount < 100) return configuredNanos;
+                if (gaps.Count < 100) return configuredNanos;
 
-        var measured = (long)(gapSumMs / gapCount * 1_000_000);
+                gaps.Sort();
+                var measured = (long)(gaps[gaps.Count / 2] * 1_000_000);
         if (Math.Abs(measured - configuredNanos) > configuredNanos / 5)
         {
             logger.LogWarning("Measured sampling interval {Measured:F2} ms differs from configured {Configured:F2} ms; using the measured value",
