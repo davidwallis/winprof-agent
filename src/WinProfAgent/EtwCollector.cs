@@ -80,6 +80,10 @@ public sealed class EtwCollector(
         rundown.MethodDCStartVerbose += OnMethod;
         rundown.MethodDCStopVerbose += OnMethod;
 
+        // Explicitly ask already-running .NET Framework processes to emit their method rundown.
+        session.CaptureState(ClrTraceEventParser.ProviderGuid,
+            (ulong)(ClrTraceEventParser.Keywords.Jit | ClrTraceEventParser.Keywords.NGen | ClrTraceEventParser.Keywords.Loader));
+
         var counts = new Dictionary<(int Pid, CallStackIndex Stack), int>();
         var processNames = new Dictionary<int, string?>();
         var windowStart = DateTimeOffset.UtcNow;

@@ -39,4 +39,4 @@ test-apps\busy-netfx\build.ps1
 - Service names and labels are sanitized for Pyroscope (no spaces).
 - Hosting packages are pinned to 10.0.x on purpose (latest NuGet is 11.x preview).
 - Smart App Control can block freshly built binaries on dev machines; there is no per-folder exclusion and self-signing didn't help.
-- Known gaps: managed frames in processes started before the agent can show as raw addresses; NGen images (`system.ni`) aren't symbolized; VB6 p-code only shows `msvbvm60` frames; only CPU profile type is collected; COM+ apps in `dllhost` can't be told apart yet.
+- Known gaps: NGen images (`system.ni`) aren't symbolized; VB6 p-code only shows `msvbvm60` frames; only CPU profile type is collected; COM+ apps in `dllhost` can't be told apart yet.
