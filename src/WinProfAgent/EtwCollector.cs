@@ -101,6 +101,10 @@ public sealed class EtwCollector(
             clrKeywords |= ClrTraceEventParser.Keywords.Contention;
             clrOptions.EventIDStacksToEnable.Add(ContentionStartEventId);
         }
+        if (_opt.CollectThreadPool)
+        {
+            clrKeywords |= ClrTraceEventParser.Keywords.Threading;
+        }
         if (clrOptions.EventIDStacksToEnable.Count == 0) clrOptions.StacksEnabled = false;
         session.EnableProvider(ClrTraceEventParser.ProviderGuid, TraceEventLevel.Verbose, (ulong)clrKeywords, clrOptions);
         session.EnableProvider(ClrRundownTraceEventParser.ProviderGuid, TraceEventLevel.Verbose,
@@ -199,6 +203,17 @@ public sealed class EtwCollector(
             }
             contentionPending.RemoveRange(keep, contentionPending.Count - keep);
         }
+
+        if (_opt.CollectThreadPool)
+        {
+            source.Clr.ThreadPoolWorkerThreadAdjustmentAdjustment += a =>
+            {
+                if (a.ProcessID <= 0 || ServiceFor(a.ProcessID, a.ProcessName) is null) return;
+                ref var v = ref CollectionsMarshal.GetValueRefOrAddDefault(data.ThreadPool, (a.ProcessID, a.Reason.ToString()), out _);
+                v++;
+            };
+        }
+
 
         if (_opt.CollectAllocations)
         {
@@ -342,6 +357,7 @@ public sealed class EtwCollector(
         public Dictionary<(int Pid, CallStackIndex Stack, string Kind), (long Count, long Value)> Disk { get; } = new();
         public Dictionary<(int Pid, CallStackIndex Stack, string Kind), (long Count, long Value)> Network { get; } = new();
         public Dictionary<(int Pid, CallStackIndex Stack), (long Count, long Value)> Waits { get; } = new();
+        public Dictionary<(int Pid, string Reason), long> ThreadPool { get; } = new();
         public long AllocEvents, AllocNoStack, ContentionEvents, ContentionNoStack;
         public Dictionary<string, (long Events, long NoStack)> Kernel { get; } = new();
         public void CountKernel(string kind, bool hasStack)
@@ -350,7 +366,7 @@ public sealed class EtwCollector(
             Kernel[kind] = (k.Events + 1, k.NoStack + (hasStack ? 0 : 1));
         }
         public bool IsEmpty => Cpu.Count == 0 && Allocs.Count == 0 && Contentions.Count == 0 &&
-            Disk.Count == 0 && Network.Count == 0 && Waits.Count == 0;
+            Disk.Count == 0 && Network.Count == 0 && Waits.Count == 0 && ThreadPool.Count == 0;
 
         public void Clear()
         {
@@ -360,6 +376,7 @@ public sealed class EtwCollector(
             Disk.Clear();
             Network.Clear();
             Waits.Clear();
+            ThreadPool.Clear();
             AllocEvents = AllocNoStack = ContentionEvents = ContentionNoStack = 0;
             Kernel.Clear();
         }
@@ -385,9 +402,22 @@ public sealed class EtwCollector(
         var ids = new List<int>();
 
         // Walks a call stack into ids (leaf first), optionally with a synthetic leaf such as an allocated type name.
-        int[]? Walk(int pid, CallStackIndex stackIndex, string? leaf)
+        int[]? Walk(int pid, CallStackIndex stackIndex, string? leaf, string[]? synthetic = null)
         {
             ids.Clear();
+            if (synthetic is not null)
+            {
+                foreach (var name in synthetic)
+                {
+                    if (!typeFrameIds.TryGetValue(name, out var sid))
+                    {
+                        typeFrameIds[name] = sid = frames.Count;
+                        frames.Add(new FrameInfo { Name = name });
+                    }
+                    ids.Add(sid);
+                }
+                return ids.ToArray();
+            }
             if (leaf is not null)
             {
                 if (!typeFrameIds.TryGetValue(leaf, out var leafId))
@@ -439,6 +469,10 @@ public sealed class EtwCollector(
         foreach (var ((pid, stack, kind), v) in data.Network)
         {
             if (Walk(pid, stack, kind) is { } f) Proc(pid).NetworkStacks.Add(new StackSample { Frames = f, Count = v.Count, Value = v.Value });
+        }
+        foreach (var ((pid, reason), count) in data.ThreadPool)
+        {
+            if (Walk(pid, default, null, new[] { "ThreadPool adjustment", reason }) is { } f) Proc(pid).ThreadPoolStacks.Add(new StackSample { Frames = f, Count = count });
         }
         foreach (var ((pid, stack), v) in data.Waits)
         {

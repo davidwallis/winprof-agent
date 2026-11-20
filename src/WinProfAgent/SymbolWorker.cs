@@ -134,6 +134,7 @@ public sealed class SymbolWorker : BackgroundService
         SampleType[] ioTypes = [new("disk_operations", "count"), new("disk_bytes", "bytes")];
         SampleType[] netTypes = [new("network_operations", "count"), new("network_bytes", "bytes")];
         SampleType[] waitTypes = [new("waits", "count"), new("wait_time", "nanoseconds")];
+        SampleType[] poolTypes = [new("threadpool_adjustments", "count")];
         SampleType[] contentionTypes = [new("contentions", "count"), new("delay", "nanoseconds")];
 
         foreach (var p in snap.Processes)
@@ -145,6 +146,7 @@ public sealed class SymbolWorker : BackgroundService
             Emit(p, p.DiskStacks, new PprofBuilder(ioTypes, new("bytes", "bytes")), st => [st.Count, st.Value], 1);
             Emit(p, p.NetworkStacks, new PprofBuilder(netTypes, new("bytes", "bytes")), st => [st.Count, st.Value], 1);
             Emit(p, p.WaitStacks, new PprofBuilder(waitTypes, new("wait_time", "nanoseconds")), st => [st.Count, st.Value], 1);
+            Emit(p, p.ThreadPoolStacks, new PprofBuilder(poolTypes, new("threadpool_adjustments", "count")), st => [st.Count], 1);
             Emit(p, p.ContentionStacks, new PprofBuilder(contentionTypes, new("contentions", "count")), st => [st.Count, st.Value], 1);
         }
 

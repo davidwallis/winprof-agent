@@ -16,6 +16,7 @@ public sealed class AgentOptions
     public bool CollectDisk { get; set; } = true;
     public bool CollectNetwork { get; set; } = true;
     public bool CollectWaits { get; set; } = false;
+    public bool CollectThreadPool { get; set; } = true;
     public PyroscopeOptions Pyroscope { get; set; } = new();
     public ProcessFilter Processes { get; set; } = new();
     public SymbolOptions Symbols { get; set; } = new();

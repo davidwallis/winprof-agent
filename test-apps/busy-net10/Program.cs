@@ -7,6 +7,7 @@ var end = DateTime.UtcNow.AddSeconds(300);
 double total = 0;
 Busy.StartLockHolder();
 Busy.StartIoThreads();
+Busy.StartPoolWork();
 while (DateTime.UtcNow < end) total += Busy.Iteration();
 Console.WriteLine(total);
 
@@ -53,6 +54,26 @@ static class Busy
     static readonly object Gate = new();
 
     // Writes and reads a temp file, and echoes bytes over loopback TCP, so disk and network profiles have data.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void BlockingWork() => Thread.Sleep(50);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void OpenCloseHandle() { using var e = new ManualResetEvent(false); }
+
+    // Floods the thread pool with blocking items so they queue, and churns kernel handles.
+    public static void StartPoolWork()
+    {
+        new Thread(() =>
+        {
+            while (true)
+            {
+                for (var i = 0; i < 200; i++) ThreadPool.QueueUserWorkItem(_ => BlockingWork());
+                for (var i = 0; i < 100; i++) OpenCloseHandle();
+                Thread.Sleep(500);
+            }
+        }) { IsBackground = true }.Start();
+    }
+
     public static void StartIoThreads()
     {
         var path = Path.Combine(Path.GetTempPath(), "winprof-busy-io.bin");
